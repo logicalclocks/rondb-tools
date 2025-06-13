@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 source ./scripts/include.sh
 
-sudo tee /etc/prometheus/prometheus.yml < ${CONFIG_FILES}/prometheus.yml >/dev/null
 before-start prometheus
-(set -x; sudo systemctl start prometheus; )
+(set -x
+ prometheus --config.file="${CONFIG_FILES}/prometheus.yml" \
+            --storage.tsdb.path="${RUN_DIR}/prometheus/data" \
+            > "${RUN_DIR}/prometheus.log" 2>&1 &)
 after-start prometheus

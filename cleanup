@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source terraform.tfvars
-terraform destroy
+if [ -d .terraform ]; then
+  echo "Destroying terraform cluster."
+  terraform destroy
+  echo "Done destroying terraform cluster."
+else
+  echo "Skip 'terraform destroy' since there is no .terraform/ directory."
+fi
+echo "Deleting AWS SSH key."
 aws ec2 delete-key-pair --key-name $key_name --region $region
+echo "Done deleting AWS SSH key."
+echo "Deleting temporary files."
 rm -rf .terraform* terraform.tfstate* tf_output \
-   $key_name.pem config_files __pycache__
-if command -v tmux >/dev/null && tmux has-session -t rondb_bench; then
-  tmux kill-session -t rondb_bench
+   $key_name.pem config_files __pycache__ gui_secret.txt
+echo "Done deleting temporary files."
+if command -v tmux >/dev/null && tmux has-session -t rondb_bm 2>/dev/null; then
+  echo "Deleting tmux session."
+  tmux kill-session -t rondb_bm
+  echo "Done deleting tmux session."
+else
+  echo "No tmux session to delete."
 fi

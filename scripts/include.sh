@@ -3,11 +3,12 @@ set -euo pipefail
 source ./config_files/shell_vars
 source ./config_files/nodeinfo
 
+bin="${WORKSPACE}/rondb/bin"
+mysql="$bin/mysql -uroot"
+
 is-running() {
-  if [ $1 == prometheus ]
-  then sudo systemctl is-active prometheus >/dev/null
-  else pgrep -x $1 >/dev/null
-  fi
+  # linux process names are max 15 characters.
+  pgrep -x "${1:0:15}" >/dev/null
 }
 
 before-start() {
@@ -27,10 +28,7 @@ after-start() {
 
 stop() {
   if ! is-running $1; then return 0; fi
-  if [ $1 == prometheus ]
-  then sudo systemctl stop prometheus >/dev/null
-  else pkill $1
-  fi
+  pkill $1
   sleep .5
   WAITCOUNT=0
   while is-running $1; do
@@ -58,7 +56,7 @@ stop() {
 
 need_rondb() {
   case $NODEINFO_ROLE in
-  ndb_mgmd|ndbmtd|mysqld|rdrs|bench) return 0 ;;
-  *) return 1 ;;
+    ndb_mgmd|ndbmtd|mysqld|rdrs|bench) return 0 ;;
+    *) return 1 ;;
   esac
 }

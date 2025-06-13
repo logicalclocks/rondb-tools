@@ -186,7 +186,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Rondb Bench",
-  "uid": "rondb_bench_dashboard",
+  "title": "RonDB RDRS",
+  "uid": "rdrs",
   "version": 1
 }

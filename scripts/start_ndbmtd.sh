@@ -3,6 +3,6 @@ source ./scripts/include.sh
 
 before-start ndbmtd
 (set -x
- ${WORKSPACE}/rondb/bin/ndbmtd --initial --ndb-nodeid="${NODEINFO_NODEIDS}" \
-   --ndb-connectstring=${NDB_MGMD_PRI}:1186)
+ $bin/ndbmtd --initial --ndb-nodeid="${NODEINFO_NODEIDS}" \
+             --ndb-connectstring=${NDB_MGMD_PRI}:1186)
 after-start ndbmtd

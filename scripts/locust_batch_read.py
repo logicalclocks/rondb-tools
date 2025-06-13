@@ -4,18 +4,17 @@ import os
 from locust import HttpUser, task, between, events
 
 class BatchReadUser(HttpUser):
-    
-    table_size = 1000000
+
+    table_size = 100000
     batch_size = 100
 
     @events.init_command_line_parser.add_listener
     def _(parser):
-        parser.add_argument("--table-size", type=int, default=1000000, help="Set max id0 value")
         parser.add_argument("--batch-size", type=int, default=100, help="Set batch size")
 
     @events.test_start.add_listener
     def _(environment, **kwargs):
-        BatchReadUser.table_size = environment.parsed_options.table_size
+        BatchReadUser.table_size = int(os.getenv("LOCUST_TABLE_SIZE"))
         BatchReadUser.batch_size = environment.parsed_options.batch_size
         print(f"Starting Locust with table_size={BatchReadUser.table_size}, batch_size={BatchReadUser.batch_size}")
 
