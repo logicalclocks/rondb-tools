@@ -47,9 +47,10 @@ resource "aws_route_table_association" "rt" {
   route_table_id = aws_route_table.rt.id
 }
 
+# Security group for all nodes
 resource "aws_security_group" "rondb_bench" {
   name        = "rondb_bench-${var.unique_suffix}"
-  description = "Expose ssh, grafana and locust"
+  description = "Expose ssh"
   vpc_id      = aws_vpc.main.id
 
   # Allow all outbound traffic
@@ -75,8 +76,15 @@ resource "aws_security_group" "rondb_bench" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
 
-  # Expose nginx (for Grafana and Locust web UI)
+# Security group for the first bench node.
+resource "aws_security_group" "rondb_bench_web" {
+  name        = "rondb_bench_web-${var.unique_suffix}"
+  description = "Expose nginx (for Grafana, Locust and demo UI)"
+  vpc_id      = aws_vpc.main.id
+
+  # Expose nginx (for Grafana, Locust and demo UI)
   ingress {
     from_port   = 8080
     to_port     = 8080
@@ -210,7 +218,13 @@ resource "aws_instance" "bench" {
   instance_type          = var.bench_instance_type
   subnet_id              = local.selected_subnets[count.index % length(local.selected_subnets)]
   associate_public_ip_address = true
-  vpc_security_group_ids = [aws_security_group.rondb_bench.id]
+
+  # Attach the common security group to all bench nodes, and the web to the first node only.
+  vpc_security_group_ids = concat(
+    [aws_security_group.rondb_bench.id],
+    count.index == 0 ? [aws_security_group.rondb_bench_web.id] : []
+  )
+
   key_name               = var.key_name
   root_block_device {
     volume_size = var.bench_disk_size

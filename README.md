@@ -71,7 +71,7 @@ Available node types are: `ndb_mgmd`, `ndbmtd`, `mysqld`, `rdrs`, `prometheus`, 
 
 * `./cluster_ctl start [NODES]`
     Start or restart services.
-    (This will not start locust, see `bench_locust`.)
+    (This will not start locust or the demo web UI, see `bench_locust` and `start_demo` respectively.)
 
 * `./cluster_ctl stop [NODES]`
     Stop services.
@@ -117,6 +117,12 @@ Available node types are: `ndb_mgmd`, `ndbmtd`, `mysqld`, `rdrs`, `prometheus`, 
 
 * `./cluster_ctl stop_locust`
     Stop locust.
+
+* `./cluster_ctl start_demo`
+    Start the demo web UI that allows anonymous users to create databases, run benchmarks and monitor.
+
+* `./cluster_ctl stop_demo`
+    Stop the demo web UI.
 
 * `./cluster_ctl list`
     Print node information, including node name, node type, public and private IP, NDB Node IDs, and running processes.

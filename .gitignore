@@ -2,7 +2,6 @@
 .terraform*
 __pycache__
 config_files/
-gui_secret.txt
+secrets.json
 terraform.*
 tf_output
-unique_suffix.txt

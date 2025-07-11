@@ -89,11 +89,17 @@ case "$NODEINFO_ROLE" in
     sudo systemctl mask nginx
     sudo DEBIAN_FRONTEND=noninteractive \
          apt-get install -y python3 python3-venv redis-tools nginx
-    # Install locust
-    mkdir -p ${RUN_DIR}/locust ${RUN_DIR}/nginx
+    # Install python deps for locust and demo UI
+    mkdir -p ${RUN_DIR}/locust ${RUN_DIR}/nginx ${RUN_DIR}/demo
     python3 -m venv ${RUN_DIR}/locust
     source ${RUN_DIR}/locust/bin/activate
     pip install -q --upgrade pip
     pip install -q locust
+    deactivate
+    python3 -m venv ${RUN_DIR}/demo
+    source ${RUN_DIR}/locust/bin/activate
+    pip install -q --upgrade pip
+    pip install -q psutil fastapi uvicorn mysql-connector-python requests
+    deactivate
     ;;
 esac

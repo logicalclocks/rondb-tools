@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RonDB Control UI</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 2em; background: #f9f9f9; }
+        button { padding: 0.5em 1em; margin: 0.5em 0; }
+        input { padding: 0.5em; margin: 0.5em 0; }
+    </style>
+    <link href="favicon.png" rel="shortcut icon" />
+</head>
+<body>
+    <h2>Start Test Environment</h2>
+    <button onclick="createDatabase()">Create Database</button>
+    <div id="db-spinner" style="display:none; margin: 1em 0; color: #555;">Creating database...</div>
+    <div id="db-status"></div>
+
+    <h2>Run Locust</h2>
+    <label>Worker Count:</label>
+    <input id="workerCount" type="number" value="1" min="1" max="4"/><!-- todo get max from somewhere -->
+    <button onclick="runLocust()">Run Locust</button>
+    <div id="locust-status"></div>
+
+    <h2>Open Monitoring Interfaces</h2>
+    <button onclick="openGrafana()">Open Grafana</button>
+    <button onclick="openLocustUI()">Open Locust UI</button>
+
+    <script>
+        let guiSecret = null;  // store gui_secret globally
+        async function createDatabase() {
+            const spinner = document.getElementById('db-spinner');
+            spinner.style.display = 'block'; // show spinner
+            try {
+                const res = await fetch('/create-database', {
+                    method: 'POST',
+                });
+                const data = await res.json();
+                guiSecret = data.gui_secret;  // store gui_secret in global variable
+                document.getElementById('db-status').innerText = JSON.stringify(data, null, 2);
+            } catch (err) {
+                document.getElementById('db-status').innerText = 'Error creating database.';
+            } finally {
+                spinner.style.display = 'none'; // hide spinner
+            }
+        }
+
+        async function runLocust() {
+            if (!guiSecret) {
+                alert('Please create the database first to get the gui_secret!');
+                return;
+            }
+            const count = document.getElementById('workerCount').value;
+            try {
+                const res = await fetch(`/run-locust?worker_count=${count}`, {
+                    method: 'POST',
+                    headers: {
+                        'X-AUTH': guiSecret   // add the gui_secret as header here
+                    }
+                });
+                const data = await res.json();
+                document.getElementById('locust-status').innerText = JSON.stringify(data, null, 2);
+            } catch (err) {
+                document.getElementById('locust-status').innerText = 'Error starting locust.';
+            }
+        }
+
+        function openGrafana() {
+            if (!guiSecret) {
+                alert('Please create the database first to get the gui_secret!');
+                return;
+            }
+            const url = `http://${location.hostname}:8080/secret=${guiSecret}/grafana/d/rdrs`;
+            window.open(url, '_blank');  // opens in new tab
+        }
+
+        function openLocustUI() {
+            if (!guiSecret) {
+                alert('Please create the database first to get the gui_secret!');
+                return;
+            }
+            const url = `http://${location.hostname}:8080/secret=${guiSecret}/locust`;
+            window.open(url, '_blank');
+        }
+    </script>
+</body>
+</html>

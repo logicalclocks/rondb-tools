@@ -5,6 +5,7 @@ CREATE DATABASE benchmark;
 USE benchmark;
 DROP PROCEDURE IF EXISTS generate_table_data$$
 CREATE PROCEDURE generate_table_data(
+    IN db_name VARCHAR(255),
     IN table_name VARCHAR(255),
     IN column_count INT,
     IN row_count INT,
@@ -21,7 +22,6 @@ BEGIN
     DECLARE create_table_sql TEXT;
     DECLARE insert_sql TEXT;
     DECLARE row_id INT DEFAULT 1;
-    DECLARE db_name VARCHAR(255) DEFAULT 'benchmark';
 
     IF table_name IS NULL THEN SET table_name = 'benchmark_tbl'; END IF;
     IF column_count IS NULL THEN SET column_count = 10; END IF;

@@ -179,21 +179,19 @@ def get_tf_output(output_name):
     return tf_output()[output_name]['value']
 
 @cache
-def get_gui_secret():
-    secret_file = Path("gui_secret.txt")
+def get_rnd_cache():
+    secret_file = Path("secrets.json")
     if not secret_file.exists():
-        secret = os.urandom(10).hex()
-        secret_file.write_text(secret)
-    return secret_file.read_text().strip()
+        secret_file.write_text(json.dumps({
+            "gui_secret": os.urandom(10).hex(),
+            "unique_suffix": os.urandom(8).hex(),
+            "demo_mysql_pw": os.urandom(10).hex(),
+        }))
+    return json.loads(secret_file.read_text())
 
-@cache
-def get_unique_suffix():
-    us_file = Path("unique_suffix.txt")
-    if not us_file.exists():
-        us = os.urandom(8).hex()
-        us_file.write_text(us)
-    return us_file.read_text().strip()
-
+def get_gui_secret(): return get_rnd_cache()["gui_secret"]
+def get_demo_mysql_pw(): return get_rnd_cache()["demo_mysql_pw"]
+def get_unique_suffix(): return get_rnd_cache()["unique_suffix"]
 def get_key_name(): return f"rondb_bench_key_{get_unique_suffix()}"
 
 # Util functions
@@ -217,21 +215,31 @@ def generate_config_files():
     GLIBC_VERSION = get_config('glibc_version')
     CPU_PLATFORM = get_config('cpu_platform')
     TARBALL_NAME = f"rondb-{RONDB_VERSION}-linux-glibc{GLIBC_VERSION}-{CPU_PLATFORM}.tar.gz"
+    RDRS_IP= (get_tf_output('rdrs_nlb_dns')
+              if node_count('rdrs') > 1
+              else first('rdrs').private_ip)
+    GUI_SECRET = get_gui_secret()
     # Generate shell_vars
+    shell_vars = {
+        "USER": USER,
+        "WORKSPACE": WORKSPACE,
+        "CONFIG_FILES": CONFIG_FILES,
+        "RUN_DIR": RUN_DIR,
+        "TARBALL_NAME": TARBALL_NAME,
+        "NUM_AZS": f"{NUM_AZS}",
+        "NDB_MGMD_PRI": NDB_MGMD_PRI,
+        "MYSQLD_PUB_1": first('mysqld').public_ip,
+        "MYSQLD_PRI_1": first('mysqld').private_ip,
+        "RDRS_URI": f"http://{RDRS_IP}:4406",
+        "RONDIS_LB": f"{get_tf_output('rondis_nlb_dns')}:6379",
+        "RDRS_PRI_1": first('rdrs').private_ip,
+        "BENCH_PRI_1": first('bench').private_ip,
+        "DEMO_MYSQL_PW": get_demo_mysql_pw(),
+        "GRAFANA_PRI_1": first('grafana').private_ip,
+        "GUI_SECRET": GUI_SECRET,
+    }
     w("config_files/shell_vars",
-      f"USER={USER}",
-      f"WORKSPACE={WORKSPACE}",
-      f"CONFIG_FILES={CONFIG_FILES}",
-      f"RUN_DIR={RUN_DIR}",
-      f"TARBALL_NAME={TARBALL_NAME}",
-      f"NUM_AZS={NUM_AZS}",
-      f"NDB_MGMD_PRI={NDB_MGMD_PRI}",
-      f"MYSQLD_PUB_1={first('mysqld').public_ip}",
-      f"RDRS_LB=http://{get_tf_output('rdrs_nlb_dns')}:4406",
-      f"RONDIS_LB={get_tf_output('rondis_nlb_dns')}:6379",
-      f"RDRS_PRI_1={first('rdrs').private_ip}",
-      f"BENCH_PRI_1={first('bench').private_ip}",
-      )
+      *[f"export {var}={value}" for var, value in shell_vars.items()])
     # Generate config.ini
     configini = [
         "[NDB_MGMD DEFAULT]",
@@ -372,9 +380,12 @@ def generate_config_files():
       "disable_login_form = true",
       "[auth.anonymous]",
       "enabled = true",
-      "org_role = Admin",
+      "org_role = Viewer",
+      "[server]",
+      f"root_url = http://{first('bench').public_ip}:8080/grafana/",
+      "serve_from_sub_path = true",
       "[live]",
-      f"allowed_origins = http://{first('grafana').public_ip}:8080",
+      f"allowed_origins = http://{first('bench').public_ip}:8080",
       )
     w("config_files/grafana/datasources/prometheus.yaml",
       "apiVersion: 1",
@@ -410,48 +421,80 @@ def generate_config_files():
       )
     shutil.copytree("dashboards", "config_files/grafana/dashboards",
                     dirs_exist_ok=True)
-    # nginx config for grafana and locust. This implements a simple cookie-based
-    # authentication. An unauthenticated user receives 403 for all requests
-    # except /secret/path, which will set the authentication cookie and redirect
-    # to /path.
-    gui_secret = get_gui_secret()
-    for config_file_name, service_port in [("nginx_grafana.conf", 3000),
-                                           ("nginx_locust.conf", 8089)]:
-        w(f"config_files/{config_file_name}",
-          f'error_log {RUN_DIR}/nginx/nginx_error.log error;',
-          f'pid {RUN_DIR}/nginx/nginx.pid;',
-          'events {',
-          '  worker_connections 4096;',
-          '}',
-          'http {',
-          '  map $http_upgrade $connection_upgrade {',
-          '    default upgrade;',
-          '    ""      close;',
-          '  }',
-          f'  client_body_temp_path {RUN_DIR}/nginx/client_temp;',
-          f'  proxy_temp_path       {RUN_DIR}/nginx/proxy_temp;',
-          f'  fastcgi_temp_path     {RUN_DIR}/nginx/fastcgi_temp;',
-          f'  uwsgi_temp_path       {RUN_DIR}/nginx/uwsgi_temp;',
-          f'  scgi_temp_path        {RUN_DIR}/nginx/scgi_temp;',
-          '  server {',
-          f'    access_log {RUN_DIR}/nginx/nginx_access.log;',
-          '    listen 8080;',
-          f'    location ~ ^/{gui_secret}(/.*)$ {{',
-          f'      add_header Set-Cookie "X-AUTH={gui_secret}; Path=/";',
-          '      return 302 $1;',
-          '    }',
-          '    location / {',
-          f'      if ($http_cookie !~* "X-AUTH={gui_secret}") {{',
-          '        return 403;',
-          '      }',
-          '      proxy_http_version 1.1;',
-          '      proxy_set_header Upgrade $http_upgrade;',
-          '      proxy_set_header Connection $connection_upgrade;',
-          f'      proxy_pass http://localhost:{service_port};',
-          '    }',
-          '  }',
-          '}',
-          )
+    # nginx config to expose grafana, locust and demo UI on the first bench
+    # node. This implements a simple cookie-based authentication. An
+    # unauthenticated user receives 403 for all requests except
+    # /secret=SECRET/path, which will set the authentication cookie and redirect
+    # to /path. location / is proxied to the demo UI without authentication, on
+    # purpose.
+    w("config_files/nginx.conf",
+      f'error_log {RUN_DIR}/nginx/nginx_error.log error;',
+      f'pid {RUN_DIR}/nginx/nginx.pid;',
+       'events {',
+       '  worker_connections 4096;',
+       '}',
+       'http {',
+       '  map $http_upgrade $connection_upgrade {',
+       '    ""      close;',
+       '    default upgrade;',
+       '  }',
+       '  map $http_cookie $gui_secret {',
+       '      "~X-AUTH=([^;]+)" $1;',
+       '      default "";',
+       '  }',
+      f'  include {CONFIG_FILES}/nginx-dynamic.conf;',
+      f'  client_body_temp_path {RUN_DIR}/nginx/client_temp;',
+      f'  proxy_temp_path       {RUN_DIR}/nginx/proxy_temp;',
+      f'  fastcgi_temp_path     {RUN_DIR}/nginx/fastcgi_temp;',
+      f'  uwsgi_temp_path       {RUN_DIR}/nginx/uwsgi_temp;',
+      f'  scgi_temp_path        {RUN_DIR}/nginx/scgi_temp;',
+       '  server {',
+      f'    access_log {RUN_DIR}/nginx/nginx_access.log;',
+       '    listen 8080;',
+       '    location ~ ^/secret=([0-9a-f]+)(/.*)$ {',
+       '      add_header Set-Cookie "X-AUTH=$1; Path=/";',
+       '      return 302 $2;',
+       '    }',
+       '    location /grafana {',
+       '      if ($secret_is_valid = 0) {',
+       '        return 403;',
+       '      }',
+       '      proxy_http_version 1.1;',
+       '      proxy_set_header Upgrade $http_upgrade;',
+       '      proxy_set_header Connection $connection_upgrade;',
+      f'      proxy_pass http://{first("grafana").private_ip}:3000;',
+       '    }',
+       '    location /locust/ {',
+       '      if ($secret_is_valid = 0) {',
+       '        return 403;',
+       '      }',
+       '      proxy_http_version 1.1;',
+       '      proxy_set_header Upgrade $http_upgrade;',
+       '      proxy_set_header Connection $connection_upgrade;',
+       '      rewrite ^/locust/(.*)$ /$1 break;',
+       '      proxy_pass http://127.0.0.1:$locust_http_port;',
+       '    }',
+       '    location / {',
+       '      proxy_http_version 1.1;',
+       '      proxy_set_header Upgrade $http_upgrade;',
+       '      proxy_set_header Connection $connection_upgrade;',
+       '      proxy_pass http://127.0.0.1:8000;',
+       '    }',
+       '  }',
+       '}',
+      )
+    # WARNING: nginx-dynamic.conf is re-generated in scripts/python_server.py,
+    # so keep the logic in sync.
+    w("config_files/nginx-dynamic.conf",
+       'map $gui_secret $secret_is_valid {',
+      f'    "{GUI_SECRET}" 1;',
+       '    default 0;',
+       '}',
+       'map $gui_secret $locust_http_port {',
+      f'    "{GUI_SECRET}" 8089;',
+       '    default 0;',
+       '}',
+      )
 
 # Parallell processing and TUI
 failed = False
@@ -570,7 +613,7 @@ def do_terraform():
             die("'terraform init' failed.")
         print("Terraform initialized successfully.")
     # terraform apply
-    if subprocess.run(["terraform", "apply"]).returncode != 0:
+    if subprocess.run(["terraform", "apply", "-auto-approve"]).returncode != 0:
         die("'terraform apply' failed.")
 
 # install command
@@ -604,11 +647,10 @@ def do_start_cluster(for_nodes):
     do_stop_cluster(for_nodes)
     print_uri = False
     for start_type, _, _ in node_types:
-        if start_type == "bench": continue
         nodes_this_iteration = [n for n in for_nodes if n.type == start_type]
         count = len(nodes_this_iteration)
         if count == 0: continue
-        if start_type == "grafana": print_uri = True
+        if start_type == "bench": print_uri = True
         print("Waiting 2 seconds before starting services on the" +
               (f" {count} " if count>1 else " ") +
               color(start_type, first(start_type).clr, " ") +
@@ -618,8 +660,8 @@ def do_start_cluster(for_nodes):
             ssh(node, f"bash ~/scripts/start_{node.type}.sh")
         ])
     if print_uri:
-        uri=lnk(f"http://{first('grafana').public_ip}:8080"
-                f"/{get_gui_secret()}/d/rdrs")
+        uri=lnk(f"http://{first('bench').public_ip}:8080"
+                f"/secret={get_gui_secret()}/grafana/d/rdrs")
         print(f'Go to {uri} in your browser to see the dashboard.')
 
 # stop command
@@ -643,7 +685,7 @@ def do_open_tmux(for_nodes):
             tmux("new-window", "-t", session_name, "-n", name, *ssh(node))
             line=f"cd {RUN_DIR}/{node.type}"
             if node.type == "bench":
-                line=f"cd {RUN_DIR}; source locust/bin/activate"
+                line=f"cd {RUN_DIR}"
             if node.type == "mysqld":
                 line=f"cd {RUN_DIR}/{node.type}; alias mysql=\"{WORKSPACE}/rondb/bin/mysql -uroot\""
             tmux("send-keys", "-t", f"{session_name}:{name}", line, "C-m")
@@ -661,8 +703,8 @@ def do_ssh(nodename, *cmd):
 def do_kill_tmux():
     if not shutil.which("tmux"):
         die("tmux is not installed.")
-    if not Path("unique_suffix.txt").exists():
-        # Avoid creating unique_suffix.txt unnecessarily.
+    if not Path("secrets.json").exists():
+        # Avoid creating secrets.json unnecessarily.
         print("No tmux session to delete.")
         return
     session_name = f"rondb_bm {get_unique_suffix()}"
@@ -697,6 +739,7 @@ def do_populate(columns, rows, column_types):
         ssh(node, f"bash ~/scripts/populate_locust.sh {columns} {rows}" +
             f" {batch_size} {column_info}")
     ])
+    check_failed()
 
 # start_locust command
 def do_start_locust(rows, total_workers, only_validate=False):
@@ -726,7 +769,7 @@ def do_start_locust(rows, total_workers, only_validate=False):
                      f" {num_workers}") ]
     run_for_all(nodes_of_type("bench"), cmdfun)
     # Print URI
-    uri=lnk(f"http://{first('bench').public_ip}:8080/{get_gui_secret()}/")
+    uri=lnk(f"http://{first('bench').public_ip}:8080/secret={get_gui_secret()}/locust")
     print(f"Go to {uri} in your browser to start the benchmark")
 
 # stop_locust command
@@ -734,6 +777,22 @@ def do_stop_locust():
     run_for_all(nodes_of_type("bench"), lambda node: [
         ssh(node, "source ~/scripts/include.sh && stop locust")
     ])
+
+# start_demo command
+def do_start_demo():
+    run_for_one_node(first('bench'), lambda node: [
+        ssh(node, "bash ~/scripts/start_python_server.sh")
+    ])
+    check_failed()
+    uri=lnk(f"http://{first('bench').public_ip}:8080/")
+    print(f'Go to {uri} in your browser to see the demo UI.')
+
+# stop_demo command
+def do_stop_demo():
+    run_for_one_node(first('bench'), lambda node: [
+        ssh(node, "source ~/scripts/include.sh && stop uvicorn")
+    ])
+    check_failed()
 
 # list command
 def do_list():
@@ -767,7 +826,7 @@ def do_cleanup():
     state_file = Path("terraform.tfstate")
     if state_file.exists():
         print("Destroying terraform cluster.")
-        if subprocess.run(["terraform", "destroy"]).returncode != 0:
+        if subprocess.run(["terraform", "destroy", "-auto-approve"]).returncode != 0:
             die("'terraform destroy' failed.")
         print("Done destroying terraform cluster.")
     else:
@@ -790,7 +849,7 @@ def do_cleanup():
         do_kill_tmux()
     print("Deleting temporary files.")
     subprocess.run("rm -rf .terraform* terraform.* tf_output config_files"
-                   " __pycache__ gui_secret.txt unique_suffix.txt",
+                   " __pycache__ secrets.json",
                    shell=True, check=True)
     print("Done deleting temporary files.")
 
@@ -861,6 +920,12 @@ if __name__ == "__main__":
             "  ./cluster_ctl stop_locust",
             "    Stop locust. Called by start_locust (and hence bench_locust).",
             "",
+            "  ./cluster_ctl start_demo",
+            "    Start demo web UI.",
+            "",
+            "  ./cluster_ctl stop_demo",
+            "    Stop demo web UI.",
+            "",
             "  ./cluster_ctl list",
             "    List node information.",
             "",
@@ -890,12 +955,20 @@ if __name__ == "__main__":
         if argc < 3:
             die("Usage: ./cluster_ctl ssh NODE_NAME [COMMAND ...]")
         do_ssh(*sys.argv[2:])
-    elif action in ["terraform", "kill_tmux", "stop_locust", "list", "cleanup"]:
+    elif action in ["terraform",
+                    "kill_tmux",
+                    "stop_locust",
+                    "start_demo",
+                    "stop_demo",
+                    "list",
+                    "cleanup"]:
         if argc != 2:
             die(f"Usage: ./cluster_ctl {action}")
         if action == "terraform": do_terraform()
         elif action == "kill_tmux": do_kill_tmux()
         elif action == "stop_locust": do_stop_locust()
+        elif action == "start_demo": do_start_demo()
+        elif action == "stop_demo": do_stop_demo()
         elif action == "list": do_list()
         elif action == "cleanup": do_cleanup()
         else: die("Bug")
