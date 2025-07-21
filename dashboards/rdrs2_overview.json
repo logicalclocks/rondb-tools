@@ -1,0 +1,311 @@
+{
+  "uid": "rdrs2_overview",
+  "title": "RDRS2 Overview",
+  "description": "RDRS2 overview dashboard",
+  "schemaVersion": 36,
+  "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+  "templating": {
+    "list": [
+
+      {
+        "name": "latencyMetrics",
+        "label": "Latency Metrics",
+        "description": "Select what latency metrics to display in the REST latency graph. Both average and various percentiles are available.",
+        "type": "custom",
+        "multi": true,
+        "allowCustomValue": false,
+        "query": "1%,5%,20%,50%,Avg,80%,95%,99%,99.9%,99.99%,100%",
+        "current": {
+          "text":  [ "20%", "50%", "80%", "99%" ],
+          "value": [ "20%", "50%", "80%", "99%" ]
+        }
+      },
+
+      {
+        "name": "instance",
+        "label": "Servers",
+        "description": "Select what RDRS servers to include in latency and rate metrics. (Number of nodes and CPU use are unaffected.)",
+        "type": "query",
+        "multi": true,
+        "allowCustomValue": false,
+        "query": {
+          "qryType": 1,
+          "query": "label_values(rdrs_endpoints_response_status_count,instance)"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "value": "$__all"
+        }
+      },
+
+      {
+        "name": "endpoint",
+        "label": "Endpoint",
+        "description": "Select what endpoints to include.",
+        "type": "query",
+        "multi": true,
+        "allowCustomValue": false,
+        "query": {
+          "qryType": 1,
+          "query": "label_values(rdrs_endpoints_response_status_count{api_type=\"REST\"},endpoint)"
+        },
+        "current": {
+          "text": [ "batch", "batch_feature_store", "feature_store", "pk-read" ],
+          "value": [ "batch", "batch_feature_store", "feature_store", "pk-read" ]
+        }
+      },
+
+      {
+        "name": "w",
+        "label": "Window",
+        "description": "Window width. Larger window creates smoother graphs.",
+        "type": "custom",
+        "multi": false,
+        "allowCustomValue": false,
+        "query": "30s,1m,5m,15m",
+        "current": {
+          "text":  "30s",
+          "value": "30s"
+        }
+      }
+
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "15s",
+  "timepicker": {
+    "refresh_intervals": [ "5s", "15s", "30s", "1m", "5m", "15m" ],
+    "time_options":      [ "1m", "5m", "15m", "1h", "3h", "6h", "12h", "24h", "2d", "7d", "30d" ]
+  },
+  "panels": [
+
+    {
+      "title": "RonDB req / s",
+      "description": "The rate of RonDB key lookups performed by REST servers (in order to respond to REST requests)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(rdrs_endpoints_response_status_count{instance=~\"${instance:regex}\",api_type=\"NDB\",endpoint=\"key\",caused_by_endpoint=~\"${endpoint:regex}\"}[$w]))",
+          "instant": true
+        }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": { "colorMode": "value" },
+      "fieldConfig": { "defaults": {
+          "unit": "short",
+          "noValue": "-",
+          "color": { "mode": "fixed", "fixedColor": "green" }
+      } }
+    },
+
+    {
+      "title": "REST req / s",
+      "description": "The rate of requests received by REST servers",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(rdrs_endpoints_response_status_count{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w]))",
+          "instant": true
+        }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": { "colorMode": "value" },
+      "fieldConfig": { "defaults": {
+          "unit": "short",
+          "noValue": "-",
+          "color": { "mode": "fixed", "fixedColor": "green" }
+      } }
+    },
+
+    {
+      "title": "50% REST Latency",
+      "description": "The median response time for requests received by REST servers",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))",
+          "instant": true
+        }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": { "colorMode": "value" },
+      "fieldConfig": { "defaults": {
+          "unit": "s",
+          "noValue": "-",
+          "color": { "mode": "fixed", "fixedColor": "green" }
+      } }
+    },
+
+    {
+      "title": "Avg REST Latency",
+      "description": "The average response time for requests received by REST servers",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(http_request_duration_seconds_sum{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])) / sum(rate(http_request_duration_seconds_count{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w]))",
+          "instant": true
+        }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": { "colorMode": "value" },
+      "fieldConfig": { "defaults": {
+          "unit": "s",
+          "noValue": "-",
+          "color": { "mode": "fixed", "fixedColor": "green" }
+      } }
+    },
+
+    {
+      "title": "99% REST Latency",
+      "description": "The 99th percentile response time for requests received by REST servers",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))",
+          "instant": true
+        }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": { "colorMode": "value" },
+      "fieldConfig": { "defaults": {
+          "unit": "s",
+          "noValue": "-",
+          "color": { "mode": "fixed", "fixedColor": "green" }
+      } }
+    },
+
+    {
+      "title": "REST Latency",
+      "description": "Response time metrics over time for requests received by REST servers. Use the \"Latency Metrics\" dropdown at the top of the dashboard to select more metrics.",
+      "type": "timeseries",
+      "gridPos": { "h": 12, "w": 20, "x": 0, "y": 4 },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "byVariable": false,
+            "include": {
+              "pattern": "^(Time.*|(${latencyMetrics:pipe}))$"
+            }
+          }
+        }
+      ],
+      "targets": [
+        { "legendFormat": "100%",   "expr": "histogram_quantile(1,      sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "99.99%", "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "99.9%",  "expr": "histogram_quantile(0.999,  sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "99%",    "expr": "histogram_quantile(0.99,   sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "95%",    "expr": "histogram_quantile(0.95,   sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "80%",    "expr": "histogram_quantile(0.80,   sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "Avg",    "expr": "sum(rate(http_request_duration_seconds_sum{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])) / sum(rate(http_request_duration_seconds_count{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w]))" },
+        { "legendFormat": "50%",    "expr": "histogram_quantile(0.50,   sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "20%",    "expr": "histogram_quantile(0.20,   sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat": "5%",     "expr": "histogram_quantile(0.05,   sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" },
+        { "legendFormat":  "1%",    "expr": "histogram_quantile(0.01,   sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"${instance:regex}\",endpoint=~\"${endpoint:regex}\"}[$w])))" }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": {
+        "legend": { "showLegend": true, "placement": "right" },
+        "tooltip": { "mode": "all" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "100%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red"    } } ] },
+          { "matcher": { "id": "byName", "options":  "99.99%" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "cyan"   } } ] },
+          { "matcher": { "id": "byName", "options":  "99.9%"  }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] },
+          { "matcher": { "id": "byName", "options":  "99%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "violet" } } ] },
+          { "matcher": { "id": "byName", "options":  "95%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } } ] },
+          { "matcher": { "id": "byName", "options":  "80%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue"   } } ] },
+          { "matcher": { "id": "byName", "options":  "Avg"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green"  } } ] },
+          { "matcher": { "id": "byName", "options":  "50%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } } ] },
+          { "matcher": { "id": "byName", "options":  "20%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue"   } } ] },
+          { "matcher": { "id": "byName", "options":   "5%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } } ] },
+          { "matcher": { "id": "byName", "options":   "1%"    }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "violet" } } ] }
+        ]
+      }
+    },
+
+    {
+      "title": "Nodes",
+      "description": "The number of nodes (VMs, containers, or machines) in the cluster",
+      "type": "stat",
+      "gridPos": { "h": 16, "w": 2, "x": 20, "y": 4 },
+      "targets": [
+        { "legendFormat": "Data nodes",    "expr": "count (count by (instance) (node_cpu_seconds_total{instance_type=\"ndbmtd\"}))", "instant": true },
+        { "legendFormat": "MySQL Servers", "expr": "count (count by (instance) (node_cpu_seconds_total{instance_type=\"mysqld\"}))", "instant": true },
+        { "legendFormat": "REST Servers",  "expr": "count (count by (instance) (node_cpu_seconds_total{instance_type=\"rdrs\"  }))", "instant": true },
+        { "legendFormat": "Bench nodes",   "expr": "count (count by (instance) (node_cpu_seconds_total{instance_type=\"bench\" }))", "instant": true }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": {
+        "orientation": "horizontal",
+        "justifyMode": "center",
+        "colorMode": "none"
+      },
+      "fieldConfig": { "defaults": {
+          "noValue": "-"
+      } }
+    },
+
+    {
+      "title": "CPU",
+      "description": "For each node in the cluster, the average CPU use (all non-idle time) is measured. For each node type, the maximum of those averages is displayed here. For data nodes, the information comes from RonSQL internals, and for the other types OS info is used.",
+      "type": "gauge",
+      "gridPos": { "h":16, "w": 2, "x": 22, "y": 4 },
+      "targets": [
+        {
+          "legendFormat": "Data nodes",
+          "expr": "max(avg by (nodeID) (1-(ndb_ndbinfo_spin_percentage+ndb_ndbinfo_sleep_percentage)/100))",
+          "instant": true
+        },
+        {
+          "legendFormat": "MySQL Servers",
+          "expr": "max(avg by (instance) ((sum by (instance, cpu) (rate(node_cpu_seconds_total{instance_type=\"mysqld\",mode!=\"idle\"}[$w]))) / (sum by (instance, cpu) (rate(node_cpu_seconds_total{instance_type=\"mysqld\"}[$w])))))",
+          "instant": true
+        },
+        {
+          "legendFormat": "REST Servers",
+          "expr": "max(avg by (instance) ((sum by (instance, cpu) (rate(node_cpu_seconds_total{instance_type=\"rdrs\",mode!=\"idle\"}[$w]))) / (sum by (instance, cpu) (rate(node_cpu_seconds_total{instance_type=\"rdrs\"}[$w])))))",
+          "instant": true
+        },
+        {
+          "legendFormat": "Bench nodes",
+          "expr": "max(avg by (instance) ((sum by (instance, cpu) (rate(node_cpu_seconds_total{instance_type=\"bench\",mode!=\"idle\"}[$w]))) / (sum by (instance, cpu) (rate(node_cpu_seconds_total{instance_type=\"bench\"}[$w])))))",
+          "instant": true
+        }
+      ],
+      "pluginVersion": "10.2.2",
+      "options": {
+        "orientation": "horizontal",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": { "defaults": {
+          "unit": "percentunit",
+          "noValue": "-",
+          "min": 0,
+          "max": 1,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red",    "value": 0.9 }
+            ]
+          }
+      } }
+    }
+
+  ]
+}
