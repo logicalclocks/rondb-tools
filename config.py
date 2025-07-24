@@ -72,6 +72,6 @@ config= {
     **cluster_size,
 
     # Node type configs.
-    **arm_config,
-    #**x86_config,
+    #**arm_config,
+    **x86_config,
 }

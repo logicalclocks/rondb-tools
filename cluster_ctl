@@ -409,7 +409,7 @@ def generate_config_files():
       "disable_login_form = true",
       "[auth.anonymous]",
       "enabled = true",
-      "org_role = Viewer",
+      "org_role = Editor",
       "[server]",
       f"root_url = http://{first('bench').public_ip}:8080/grafana/",
       "serve_from_sub_path = true",

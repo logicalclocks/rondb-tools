@@ -9,6 +9,7 @@ else
   exit 1
 fi
 
+export LD_LIBRARY_PATH="${WORKSPACE}/rondb/lib"
 before-start $RDRS_BIN
 (set -x
  $bin/$RDRS_BIN --config "./config_files/rdrs_${NODEINFO_IDX}.json" \
