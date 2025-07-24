@@ -687,7 +687,7 @@ def do_start_cluster(for_nodes):
         ])
     if print_uri:
         uri=lnk(f"http://{first('bench').public_ip}:8080"
-                f"/secret={get_gui_secret()}/grafana/d/rdrs")
+                f"/secret={get_gui_secret()}/grafana/d/rdrs2_overview")
         print(f'Go to {uri} in your browser to see the dashboard.')
 
 # stop command
