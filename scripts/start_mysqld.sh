@@ -36,9 +36,11 @@ if [ $NODEINFO_IDX -eq 0 ]; then
   echo "Creating the procedure for creating rdrs benchmark table" \
        "on MySQL ${MYSQLD_PUB_1}"
   $mysql -e "source ./scripts/benchmark_load.sql"
-  echo "Creating the rondis tables on MySQL ${MYSQLD_PUB_1}"
-  $mysql -e "source ./scripts/create_rondis_tables.sql"
-  $mysql -e "use benchmark;call CreateRondisTables(2)"
+  if [ "$RDRS_MAJOR_VERSION" == 2 ]; then
+    echo "Creating the rondis tables on MySQL ${MYSQLD_PUB_1}"
+    $mysql -e "source ./scripts/create_rondis_tables.sql"
+    $mysql -e "use benchmark;call CreateRondisTables(2)"
+  fi
   $mysql -e "DROP USER IF EXISTS 'db_create_user'@'$BENCH_PRI_1';"
   $mysql -e "CREATE USER 'db_create_user'@'$BENCH_PRI_1' IDENTIFIED BY '$DEMO_MYSQL_PW';"
   $mysql -e "GRANT ALL PRIVILEGES ON *.* TO 'db_create_user'@'$BENCH_PRI_1';"

@@ -2,10 +2,16 @@
 # This config file is a python script. Only the config variable in the end
 # matters, the rest are for convenience.
 
-# For RonDB, we need the RonDB version and the glibc version.
+# For RonDB, we need the RonDB version, glibc version and RDRS major version
 latest_rondb = {
-    "glibc_version": "2.28",
     "rondb_version": "24.10.8",
+    "glibc_version": "2.28",
+    "rdrs_major_version": 2,
+}
+latest_rondb_22 = {
+    "rondb_version": "22.10.13",
+    "glibc_version": "2.28",
+    "rdrs_major_version": 1,
 }
 
 cluster_size = {
@@ -60,6 +66,7 @@ config= {
 
     # RonDB version
     **latest_rondb,
+    #**latest_rondb_22,
 
     # Cluster size.
     **cluster_size,

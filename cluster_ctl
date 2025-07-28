@@ -36,10 +36,12 @@ config_required_ints = [
     "rdrs_count",
     "rdrs_disk_size",
     "rondb_replicas",
+    "rdrs_major_version",
 ]
 config_vars_not_in_tfvars = [
     "rondb_replicas",
     "rondb_version",
+    "rdrs_major_version",
     "glibc_version",
 ]
 
@@ -151,6 +153,9 @@ def config():
     if c['cpu_platform'] not in ['arm64_v8', 'x86_64']:
         die(f"Error: cpu_platform must be either 'arm64_v8' or 'x86_64',"
             f" but got '{c['cpu_platform']}' from config.py.")
+    if c['rdrs_major_version'] not in [1, 2]:
+        die(f"Error: rdrs_major_version must be either 1 or 2, but got"
+            f" {c['rdrs_major_version']} from config.py.")
     for var in c:
         if var not in config_required_strings + config_required_ints:
             die(f"Unexpected variable '{var}' in config.py.")
@@ -237,6 +242,7 @@ def generate_config_files():
         "RDRS_URI": f"http://{RDRS_IP}:4406",
         "RONDIS_LB": f"{get_tf_output('rondis_nlb_dns')}:6379",
         "RDRS_PRI_1": first('rdrs').private_ip,
+        "RDRS_MAJOR_VERSION": f"{get_config('rdrs_major_version')}",
         "BENCH_PRI_1": first('bench').private_ip,
         "DEMO_MYSQL_PW": get_demo_mysql_pw(),
         "GRAFANA_PRI_1": first('grafana').private_ip,
@@ -301,39 +307,58 @@ def generate_config_files():
           )
     # Generate rdrs_*.json
     for node in nodes_of_type("rdrs"):
-        w(f"config_files/rdrs_{node.idx}.json",
-          json.dumps({
-              "RonDB": {
-                  "Mgmds": [{"IP": NDB_MGMD_PRI}],
-                  "ConnectionPoolSize": 2,
-                  "NodeIDs": node.ndb_nodeids,
-              },
-              "REST": {
-                  "NumThreads": 64,
-                  "UseCompression": False,
-                  "UseSingleTransaction": False,
-              },
-              "Rondis": {
-                  "Enable": True,
-                  "NumThreads": 32,
-                  "NumDatabases": 2,
-                  "Databases": [
-                      {
-                          "Index": 0,
-                          "FastHCOUNT": True,
-                      },
-                      {
-                          "Index": 1,
-                          "FastHCOUNT": False,
-                      },
-                  ],
-              },
-              "Security": {
-                  "APIKey": {
-                      "UseHopsworksAPIKeys": False,
-                  },
-              },
-          }, indent=4))
+        rdrs_conf = {
+            "RonDB": {
+                "Mgmds": [{"IP": NDB_MGMD_PRI}],
+                "ConnectionPoolSize": len(node.ndb_nodeids),
+                "NodeIDs": node.ndb_nodeids,
+            },
+            "REST": {
+                "NumThreads": 64,
+                "UseCompression": False,
+                "UseSingleTransaction": False,
+            },
+            "Rondis": {
+                "Enable": True,
+                "NumThreads": 32,
+                "NumDatabases": 2,
+                "Databases": [
+                    {
+                        "Index": 0,
+                        "FastHCOUNT": True,
+                    },
+                    {
+                        "Index": 1,
+                        "FastHCOUNT": False,
+                    },
+                ],
+            },
+            "Security": {
+                "APIKey": {
+                    "UseHopsworksAPIKeys": False,
+                },
+            },
+        }
+        if get_config('rdrs_major_version') == 1:
+            # rdrs 1 does not support more than one data connection. Also, it
+            # uses different connections for RonDB and RonDBMetadataCluster even
+            # if they are configured identically. Therefore, they must be
+            # configured with different (or no) node IDs.
+            assert len(node.ndb_nodeids) == 2
+            [data_nodeid, metadata_nodeid] = node.ndb_nodeids
+            rdrs_conf["RonDB"]["ConnectionPoolSize"] = 1
+            rdrs_conf["RonDB"]["NodeIDs"] = [data_nodeid]
+            rdrs_conf["RonDBMetadataCluster"] = {
+                "Mgmds": [{"IP": NDB_MGMD_PRI, "Port": 1186}],
+                "ConnectionPoolSize": 1,
+                "NodeIDs": [metadata_nodeid],
+            }
+            # rdrs 1 has GRPC enabled by default, let's turn it off
+            rdrs_conf["GRPC"] = { "Enable": False }
+            # rdrs 1 REST does not default to port 4406, despite documentation
+            # claiming so.
+            rdrs_conf["REST"]["ServerPort"] = 4406
+        w(f"config_files/rdrs_{node.idx}.json", json.dumps(rdrs_conf, indent=4))
     # Generate prometheus.yml
     prometheus_yml = [
         "global:",
@@ -425,6 +450,10 @@ def generate_config_files():
       )
     shutil.copytree("dashboards", "config_files/grafana/dashboards",
                     dirs_exist_ok=True)
+    for f in Path("config_files/grafana/dashboards").glob(
+            {1: "rdrs2*.json", 2: "rdrs1*.json"}[
+                get_config('rdrs_major_version')]):
+        f.unlink()
     # nginx config to expose grafana, locust and demo UI on the first bench
     # node. This implements a simple cookie-based authentication. An
     # unauthenticated user receives 403 for all requests except
@@ -687,7 +716,8 @@ def do_start_cluster(for_nodes):
         ])
     if print_uri:
         uri=lnk(f"http://{first('bench').public_ip}:8080"
-                f"/secret={get_gui_secret()}/grafana/d/rdrs2_overview")
+                f"/secret={get_gui_secret()}/grafana/d"
+                f"/rdrs{get_config('rdrs_major_version')}_overview")
         print(f'Go to {uri} in your browser to see the dashboard.')
 
 # stop command
