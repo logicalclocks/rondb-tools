@@ -1018,11 +1018,6 @@
   "templating": {
     "list": [
       {
-        "current": {
-          "selected": false,
-          "text": "10.0.2.15:4406",
-          "value": "10.0.2.15:4406"
-        },
         "datasource": {
           "type": "prometheus",
           "uid": "PBFA97CFB590B2093"
