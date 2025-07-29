@@ -22,8 +22,8 @@ cluster_size = {
     # to use.
     "ndbmtd_count": 1,
     "mysqld_count": 1,
-    "rdrs_count": 1,
-    "bench_count": 1,
+    "rdrs_count": 2,
+    "bench_count": 5,
     # We also need to specify the number of data node replicas.
     # Note that replicas * node groups = data nodes.
     # Therefore ndbmtd_count must be divisible by rondb_replicas.
