@@ -88,8 +88,8 @@ async def create_database(response: Response, background_tasks: BackgroundTasks)
         db_name = f"db_{os.urandom(8).hex()}"
         # get both http and master ports
         occupied_locust_port_offsets = set(
-            *[session["locust_port_offset"]
-              for session in user_sessions.values()])
+            [session["locust_port_offset"]
+             for session in user_sessions.values()])
         while next_locust_port_offset in occupied_locust_port_offsets:
             next_locust_port_offset = (next_locust_port_offset + 1) % 10000
         user_sessions[gui_secret] = {
