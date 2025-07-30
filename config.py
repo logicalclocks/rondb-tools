@@ -4,7 +4,7 @@
 
 # For RonDB, we need the RonDB version, glibc version and RDRS major version
 latest_rondb = {
-    "rondb_version": "24.10.8",
+    "rondb_version": "24.10.9",
     "glibc_version": "2.28",
     "rdrs_major_version": 2,
 }
