@@ -8,7 +8,7 @@ fi
 LOCUST_TABLE_SIZE=$1
 WORKERS=$2
 
-source ${RUN_DIR}/locust-venv/bin/activate
+source ${RUN_DIR}/venv/bin/activate
 
 before-start locust
 if [ ${NODEINFO_IDX} -eq 0 ]; then

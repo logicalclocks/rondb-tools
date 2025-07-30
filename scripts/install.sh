@@ -107,15 +107,10 @@ case "$NODEINFO_ROLE" in
     fi
     # Install python deps for locust and demo UI
     mkdir -p ${RUN_DIR}/locust ${RUN_DIR}/nginx ${RUN_DIR}/demo
-    python3 -m venv ${RUN_DIR}/locust-venv
-    source ${RUN_DIR}/locust-venv/bin/activate
+    python3 -m venv ${RUN_DIR}/venv
+    source ${RUN_DIR}/venv/bin/activate
     pip install -q --upgrade pip
-    pip install -q locust
-    deactivate
-    python3 -m venv ${RUN_DIR}/demo-venv
-    source ${RUN_DIR}/demo-venv/bin/activate
-    pip install -q --upgrade pip
-    pip install -q psutil fastapi uvicorn mysql-connector-python requests
+    pip install -q locust psutil fastapi uvicorn mysql-connector-python requests
     deactivate
     ;;
 esac

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 source ./scripts/include.sh
+
+# Only operate on the first bench node
+if [ "$NODEINFO_IDX" != 0 ]; then exit; fi
+
 nginx_error_log="${RUN_DIR}/nginx/nginx_error.log"
 before-start nginx
 (set -x

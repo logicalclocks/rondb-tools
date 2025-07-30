@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source ./scripts/include.sh
 
-source ${RUN_DIR}/demo-venv/bin/activate
+source ${RUN_DIR}/venv/bin/activate
 before-start uvicorn
 cd scripts
 (set -x
