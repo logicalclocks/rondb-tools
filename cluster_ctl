@@ -853,7 +853,7 @@ def do_start_demo():
     check_failed()
     uri=lnk(f"http://{first('bench').public_ip}:8080/")
     print('To show demo server error logs, run:')
-    print(f'  ./cluster_ctl ssh {first("bench").name()} cat workspace/rondb-run/demo.err')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo.err')
     print(f'Go to {uri} in your browser to see the demo UI.')
 
 # stop_demo command
