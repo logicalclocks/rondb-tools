@@ -237,7 +237,13 @@ def update_nginx_config():
       )
     # Attempt to trigger nginx to reload config.
     subprocess.run(
-        ["nginx", "-s", "reload", "-c", f"{CONFIG_FILES}/nginx.conf"],
+        ["nginx",
+         "-s", "reload",
+         "-c", f"{CONFIG_FILES}/nginx.conf",
+         # We provide the error log path using the -e option rather than via
+         # configuration, since otherwise we get a spurious warning (see
+         # https://stackoverflow.com/questions/34258894)
+         "-e", os.environ['NGINX_ERROR_LOG']],
         check=True)
 
 def wait_and_cleanup():

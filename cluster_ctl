@@ -234,6 +234,7 @@ def generate_config_files():
         "WORKSPACE": WORKSPACE,
         "CONFIG_FILES": CONFIG_FILES,
         "RUN_DIR": RUN_DIR,
+        "NGINX_ERROR_LOG": f"{RUN_DIR}/nginx/nginx_error.log",
         "TARBALL_NAME": TARBALL_NAME,
         "NUM_AZS": f"{NUM_AZS}",
         "NDB_MGMD_PRI": NDB_MGMD_PRI,
@@ -841,6 +842,8 @@ def do_start_demo():
     ])
     check_failed()
     uri=lnk(f"http://{first('bench').public_ip}:8080/")
+    print('To show demo server error logs, run:')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat workspace/rondb-run/demo.err')
     print(f'Go to {uri} in your browser to see the demo UI.')
 
 # stop_demo command
