@@ -47,7 +47,7 @@ config_vars_not_in_tfvars = [
 
 trueColor = not ('TERM_PROGRAM' in os.environ and
                  'Apple_Terminal' in os.environ['TERM_PROGRAM'])
-node_color = lambda r, g, b, i: "38;5;16;48;" + (
+def node_color(r, g, b, i): return "38;5;16;48;" + (
     f"2;{r};{g};{b}" if trueColor else f"5;{i}")
 node_types = [
     #Node type,    number of NDB NodeIds,               R    G    B   256-color
@@ -59,7 +59,6 @@ node_types = [
     ("grafana",    0,                       node_color(239, 161, 248, 212)),
     ("bench",      NUM_CLUSTER_CONN_BENCH,  node_color(255, 178,  75, 215)),
 ]
-import sys
 stdout_is_tty=sys.stdout.isatty()
 def color(s, c, b=""): return f"\033[{c}m{b+s+b}\033[0m" if stdout_is_tty else s
 def red(s): return color(s, '1;31')
@@ -179,11 +178,13 @@ def tf_output():
     if not (tf_output_file.exists() and
             state_file.exists() and
             state_file.stat().st_mtime < tf_output_file.stat().st_mtime):
-        proc = subprocess.run("terraform output -json > tf_output", shell=True)
+        proc = subprocess.run("terraform output -json > tf_output",
+                              shell=True,
+                              check=False)
         if proc.returncode != 0:
             die(f"Error running terraform output: {proc.stdout + proc.stderr}")
     has_read_tf_output = True
-    return json.loads(tf_output_file.read_text())
+    return json.loads(tf_output_file.read_text(encoding='utf-8'))
 def get_tf_output(output_name):
     return tf_output()[output_name]['value']
 
@@ -191,12 +192,14 @@ def get_tf_output(output_name):
 def get_rnd_cache():
     secret_file = Path("secrets.json")
     if not secret_file.exists():
-        secret_file.write_text(json.dumps({
-            "gui_secret": os.urandom(10).hex(),
-            "unique_suffix": os.urandom(8).hex(),
-            "demo_mysql_pw": os.urandom(10).hex(),
-        }))
-    return json.loads(secret_file.read_text())
+        secret_file.write_text(
+            json.dumps({
+                "gui_secret": os.urandom(10).hex(),
+                "unique_suffix": os.urandom(8).hex(),
+                "demo_mysql_pw": os.urandom(10).hex(),
+            }),
+            encoding='utf-8')
+    return json.loads(secret_file.read_text(encoding='utf-8'))
 
 def get_gui_secret(): return get_rnd_cache()["gui_secret"]
 def get_demo_mysql_pw(): return get_rnd_cache()["demo_mysql_pw"]
@@ -204,7 +207,9 @@ def get_unique_suffix(): return get_rnd_cache()["unique_suffix"]
 def get_key_name(): return f"rondb_bench_key_{get_unique_suffix()}"
 
 # Util functions
-def w(name, *content): Path(name).write_text("\n".join(content) + "\n")
+def w(name, *content):
+    Path(name).write_text("\n".join(content) + "\n",
+                          encoding='utf-8')
 def mkdir(p): Path(p).mkdir(parents=True, exist_ok=True)
 
 # Generate ./config_files
@@ -213,10 +218,7 @@ def generate_config_files():
     shutil.rmtree("config_files", ignore_errors=True)
     mkdir("config_files")
     # Extract some values
-    USER="ubuntu"
-    WORKSPACE=f"/home/{USER}/workspace"
     CONFIG_FILES=f"/home/{USER}/config_files"
-    RUN_DIR=f"{WORKSPACE}/rondb-run"
     NDB_MGMD_PRI = first('ndb_mgmd').private_ip
     NO_OF_REPLICAS = get_config('rondb_replicas')
     NUM_AZS = get_config('num_azs')
@@ -571,7 +573,9 @@ def stream_process(cmd, prefix, check=False):
     if check: check_failed()
 def update_status(node):
     proc = subprocess.run(ssh(node, 'bash ~/scripts/status.sh'),
-                          capture_output=True, text=True)
+                          capture_output=True,
+                          text=True,
+                          check=False)
     node.status = proc.stdout.strip() if proc.returncode == 0 else None
 def connectivity_check(node):
     global failed
@@ -660,11 +664,13 @@ def do_terraform():
     # Initialize terraform if necessary
     if not Path(".terraform").exists():
         print("Running terraform init...")
-        if subprocess.run(["terraform", "init"]).returncode != 0:
+        if subprocess.run(["terraform", "init"], check=False).returncode != 0:
             die("'terraform init' failed.")
         print("Terraform initialized successfully.")
     # terraform apply
-    if subprocess.run(["terraform", "apply", "-auto-approve"]).returncode != 0:
+    if subprocess.run(["terraform", "apply", "-auto-approve"],
+                      check=False
+                      ).returncode != 0:
         die("'terraform apply' failed.")
 
 # install command
@@ -753,7 +759,9 @@ def do_open_tmux(for_nodes):
 def do_ssh(nodename, *cmd):
     for node in all_nodes():
         if not node.name() == nodename: continue
-        exit(subprocess.run(ssh(node, ' '.join(cmd))).returncode)
+        exit(subprocess.run(ssh(node, ' '.join(cmd)),
+                            check=False
+                            ).returncode)
     die("Could not find a node by that name. Try ./cluster_ctl list")
 
 # kill_tmux command
@@ -766,7 +774,9 @@ def do_kill_tmux():
         return
     session_name = f"rondb_bm {get_unique_suffix()}"
     if subprocess.run(["tmux", "has-session", "-t", session_name],
-                      capture_output=True).returncode != 0:
+                      capture_output=True,
+                      check=False
+                      ).returncode != 0:
         print("No tmux session to delete.")
         return
     print(f"Deleting tmux session '{session_name}'.")
@@ -885,7 +895,9 @@ def do_cleanup():
     state_file = Path("terraform.tfstate")
     if state_file.exists():
         print("Destroying terraform cluster.")
-        if subprocess.run(["terraform", "destroy", "-auto-approve"]).returncode != 0:
+        if subprocess.run(["terraform", "destroy", "-auto-approve"],
+                          check=False,
+                          ).returncode != 0:
             die("'terraform destroy' failed.")
         print("Done destroying terraform cluster.")
     else:
@@ -913,7 +925,7 @@ def do_cleanup():
     print("Done deleting temporary files.")
 
 # CLI
-if __name__ == "__main__":
+def main():
     argc = len(sys.argv)
     node_type_names = [x[0] for x in node_types]
     if argc < 2:
@@ -1066,3 +1078,6 @@ if __name__ == "__main__":
             do_start_locust(rows, total_workers)
         else: die("Bug")
     else: die(f"Unknown action: {action}")
+
+if __name__ == "__main__":
+    main()
