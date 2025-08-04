@@ -13,6 +13,7 @@ import socket
 from threading import Lock
 from fastapi.responses import HTMLResponse, FileResponse, Response
 import json
+import asyncio
 
 app = FastAPI()
 
@@ -82,7 +83,7 @@ def startup():
     else:
         log_info(f"{state_file} does not exist, starting with no sessions")
     state_lock.release() # Lock was acquired at file load
-    cleanup()
+    asyncio.create_task(continuously_cleanup())
 
 # todo don't create if already created
 @app.post("/create-database")
@@ -132,10 +133,7 @@ async def create_database(response: Response, background_tasks: BackgroundTasks)
     # 2. Update NGINX config and reload
     update_nginx_config()
 
-    # 3. Schedule background cleanup
-    background_tasks.add_task(wait_and_cleanup)
-
-    # 4. Send gui_secret in response
+    # 3. Send gui_secret in response
     return {"message": "Database created", "gui_secret": gui_secret}
 
 @app.post("/run-locust")
@@ -255,10 +253,6 @@ def update_nginx_config():
          "-e", os.environ['NGINX_ERROR_LOG']],
         check=True)
 
-def wait_and_cleanup():
-    time.sleep(SESSION_TTL + 0.1)
-    cleanup()
-
 def cleanup():
     until = time.time()
     did_change = False
@@ -288,3 +282,8 @@ def cleanup():
     # Remove NGINX config + reload
     if did_change:
         update_nginx_config()
+
+async def continuously_cleanup():
+    while True:
+        cleanup()
+        await asyncio.sleep(10)
