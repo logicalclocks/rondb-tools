@@ -847,11 +847,15 @@ def do_stop_locust():
 
 # start_demo command
 def do_start_demo():
+    if node_count("bench") > 1:
+        die("Demo server not supported for multiple bench nodes.")
     run_for_one_node(first('bench'), lambda node: [
         ssh(node, "bash ~/scripts/start_python_server.sh")
     ])
     check_failed()
     uri=lnk(f"http://{first('bench').public_ip}:8080/")
+    print('To show demo server access logs, run:')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo.log')
     print('To show demo server error logs, run:')
     print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo.err')
     print(f'Go to {uri} in your browser to see the demo UI.')

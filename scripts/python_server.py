@@ -34,10 +34,19 @@ MAX_WORKER_COUNT=4
 MAX_ACTIVE_DATABASES = 10
 SESSION_TTL = 600 # wait 10 min
 
-user_sessions = {}  # gui_secret → {"db", "expires_at", "locust_master_port", "locust_http_port", "locust_pids"}
+# user_sessions: map from gui_secret:string to
+# { "db":string,
+#   "expires_at":float,
+#   "locust_port_offset":int,
+#   "locust_pids":[int]|True,
+# }
+user_sessions = {}
 next_locust_port_offset = 0
 state_lock = Lock()
 state_lock.acquire() # Make sure startup() gets to access it first
+
+def log_error(s): print(f"ERROR: {s}")
+def log_info(s): print(f"INFO: {s}")
 
 def save_state():
     state_file = RUN_DIR / "demo_state.json"
@@ -69,9 +78,9 @@ def startup():
                 user_sessions = state["user_sessions"]
                 next_locust_port_offset = state["next_locust_port_offset"]
         except json.JSONDecodeError:
-            print(f"Error reading {state_file}, starting with no sessions")
+            log_error(f"Error reading {state_file}, starting with no sessions")
     else:
-        print(f"{state_file} does not exist, starting with no sessions")
+        log_info(f"{state_file} does not exist, starting with no sessions")
     state_lock.release() # Lock was acquired at file load
     cleanup()
 
@@ -252,11 +261,13 @@ def wait_and_cleanup():
 
 def cleanup():
     until = time.time()
-    do_update_nginx_config = False
+    did_change = False
     with state_lock:
         for gui_secret, session in user_sessions.copy().items():
             if until < session["expires_at"]:
                 continue
+            log_info(f"Cleaning up user session {gui_secret}"
+                     f" with database {session['db']}")
             for pid in session["locust_pids"]:
                 try:
                     os.kill(pid, signal.SIGTERM)
@@ -271,7 +282,9 @@ def cleanup():
             conn.close()
             # Remove session object
             user_sessions.pop(gui_secret)
-            do_update_nginx_config = True
+            did_change = True
+        if did_change:
+            save_state()
     # Remove NGINX config + reload
-    if do_update_nginx_config:
+    if did_change:
         update_nginx_config()
