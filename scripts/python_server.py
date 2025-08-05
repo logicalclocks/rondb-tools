@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Header
+from fastapi import FastAPI, HTTPException, Query, Header
 import re
 import signal
 import psutil
@@ -87,7 +87,7 @@ def startup():
 
 # todo don't create if already created
 @app.post("/create-database")
-async def create_database(response: Response, background_tasks: BackgroundTasks):
+async def create_database(response: Response):
     global next_locust_port_offset
     with state_lock:
         active_dbs = len(user_sessions)
