@@ -211,6 +211,8 @@ async def startup():
                         db=session_json["db"],
                         expires_at=session_json["expires_at"],
                         )
+            for gui_secret, session in state.user_sessions.items():
+                with session.lock:
                     if session.status == SessionStatus.CREATING_DATABASE:
                         await drop_database(
                             session.db,
@@ -218,9 +220,13 @@ async def startup():
                             gui_secret)
                         session.status = SessionStatus.NORMAL
                         session.db = None
-                        # todo save, although we're under two locks. We should hold state_lock, but not state_file_lock.
+                        state.set_session(gui_secret, session)
                     elif session.status == SessionStatus.STARTING_LOCUST:
-                        pass # todo cleanup
+                        if session.locust_pids:
+                            await kill_pids(session.locust_pids, gui_secret)
+                            session.locust_pids = []
+                        session.status = SessionStatus.NORMAL
+                        state.set_session(gui_secret, session)
                     else:
                         assert session.status == SessionStatus.NORMAL, "Bug"
                     state.user_sessions[gui_secret] = session
