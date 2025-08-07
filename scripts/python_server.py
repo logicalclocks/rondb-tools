@@ -6,6 +6,7 @@ import subprocess
 import os
 import stat
 import time
+import datetime
 import mysql.connector
 import requests
 import socket
@@ -15,8 +16,20 @@ import asyncio
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Union, Optional, List
 from enum import Enum
+from contextlib import suppress, asynccontextmanager
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await startup()
+    stop = asyncio.Event()
+    maintenance_task = asyncio.create_task(maintenance(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        await maintenance_task
+
+app = FastAPI(lifespan=lifespan)
 
 from pathlib import Path
 RUN_DIR = Path(os.environ['RUN_DIR'])
@@ -56,24 +69,6 @@ class UserSession:
         self.locust_pids = locust_pids
         self.db = db
         self.expires_at = expires_at or (time.time() + SESSION_TTL)
-    async def save(self, secret: str) -> None:
-        """
-        Persist just *this* session to demo_state.json.
-        Call while holding **self.lock**.
-        """
-        await change_persisted_state_atomically(lambda data: {
-            **data,
-            "user_sessions": {
-                **data["user_sessions"],
-                secret: {
-                    "status": self.status.name,
-                    "locust_port_offset": self.locust_port_offset,
-                    "locust_pids": self.locust_pids,
-                    "db": self.db,
-                    "expires_at": self.expires_at,
-                }
-            },
-        })
     def viewmodel(self) -> dict:
         """
         Return a view model of this session, suitable for the GUI.
@@ -91,15 +86,39 @@ class AppState:
     def __init__(self):
         self.user_sessions: dict[str, UserSession] = {}
         self.next_locust_port_offset: int = 0
-    async def save_toplevel(self) -> None:
-        """Persist top-level state, leaving sessions untouched."""
+    async def set_next_locust_port_offset(self, new_value) -> None:
+        self.next_locust_port_offset = new_value
         await change_persisted_state_atomically(lambda data: {
             **data,
             "next_locust_port_offset": self.next_locust_port_offset,
         })
+    async def set_session(self, gui_secret, session) -> None:
+        self.user_sessions[gui_secret] = session
+        await change_persisted_state_atomically(lambda data: {
+            **data,
+            "user_sessions": {
+                **data["user_sessions"],
+                gui_secret: {
+                    "status": session.status.name,
+                    "locust_port_offset": session.locust_port_offset,
+                    "locust_pids": session.locust_pids,
+                    "db": session.db,
+                    "expires_at": session.expires_at,
+                }
+            },
+        })
+    async def rm_session(self, gui_secret) -> None:
+        if gui_secret in self.user_sessions:
+            del self.user_sessions[gui_secret]
+            await change_persisted_state_atomically(lambda data: {
+                **data,
+                "user_sessions": {
+                    k: v for k, v in data["user_sessions"].items()
+                    if k != gui_secret
+                },
+            })
 state = AppState()
 state_lock = asyncio.Lock()
-state_lock.acquire() # Make sure startup() gets to access it first
 state_file = RUN_DIR / "demo_state.json"
 state_file_lock = asyncio.Lock() # protects state_file
 async def change_persisted_state_atomically(func):
@@ -128,8 +147,7 @@ class EnsureAuthCookieMiddleware(BaseHTTPMiddleware):
             gui_secret = os.urandom(10).hex()
         await state_lock.acquire()
         if gui_secret not in state.user_sessions:
-            state.user_sessions[gui_secret] = UserSession()
-            await state.user_sessions[gui_secret].save()
+            await state.set_session(gui_secret, UserSession())
         request.state.gui_secret = gui_secret
         request.state.session = state.user_sessions[gui_secret]
         # To avoid deadlocks, we always acquire first state_lock, then
@@ -160,13 +178,14 @@ class EnsureAuthCookieMiddleware(BaseHTTPMiddleware):
                 # in every request
                 httponly = True,
                 samesite = "lax",
-                secure = request.url.scheme == "https",
+                secure = False,
             )
         return response
 app.add_middleware(EnsureAuthCookieMiddleware)
 
-def log_error(s): print(f"ERROR: {s}")
-def log_info(s): print(f"INFO: {s}")
+def ts(): return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")
+def log_error(msg, **other_keys): print(json.dumps({"ts": ts(), "type":"error", "msg":msg, **other_keys}))
+def log_info(msg, **other_keys): print(json.dumps({"ts": ts(), "type":"info", "msg":msg, **other_keys}))
 
 @app.get("/favicon.png")
 async def favicon(request: Request):
@@ -178,37 +197,41 @@ async def index(request: Request):
     request.state.release_state_lock()
     return FileResponse("demo_static/index.html", media_type="text/html")
 
-@app.on_event("startup")
-def startup():
-    if state_file.exists():
-        async with state_file_lock:
-            data = json.loads(state_file.read_text())
-            state.next_locust_port_offset = data["next_locust_port_offset"]
-            for gui_secret, session_json in data["user_sessions"].items():
-                session = UserSession(
-                    status=SessionStatus[session_json["status"]],
-                    locust_port_offset=session_json["locust_port_offset"],
-                    locust_pids=session_json["locust_pids"],
-                    db=session_json["db"],
-                    expires_at=session_json["expires_at"],
-                    )
-                if session.status == SessionStatus.CREATING_DATABASE:
-                    drop_database(
-                        session.db,
-                        f"it belongs to session {gui_secret} and was in the "
-                        "process of creation but we don't know if it finished")
-                    session.status = SessionStatus.NORMAL
-                    state.db = None
-                state.user_sessions[gui_secret] = session
-    else:
-        log_info(f"{state_file} does not exist, starting with no sessions")
-    state_lock.release() # Lock was acquired at top level, after declaration
-    asyncio.create_task(maintenance())
+async def startup():
+    async with state_lock:
+        if state_file.exists():
+            async with state_file_lock:
+                data = json.loads(state_file.read_text())
+                state.next_locust_port_offset = data["next_locust_port_offset"]
+                for gui_secret, session_json in data["user_sessions"].items():
+                    session = UserSession(
+                        status=SessionStatus[session_json["status"]],
+                        locust_port_offset=session_json["locust_port_offset"],
+                        locust_pids=session_json["locust_pids"],
+                        db=session_json["db"],
+                        expires_at=session_json["expires_at"],
+                        )
+                    if session.status == SessionStatus.CREATING_DATABASE:
+                        await drop_database(
+                            session.db,
+                            "Startup discovered creation in progress",
+                            gui_secret)
+                        session.status = SessionStatus.NORMAL
+                        session.db = None
+                        # todo save, although we're under two locks. We should hold state_lock, but not state_file_lock.
+                    elif session.status == SessionStatus.STARTING_LOCUST:
+                        pass # todo cleanup
+                    else:
+                        assert session.status == SessionStatus.NORMAL, "Bug"
+                    state.user_sessions[gui_secret] = session
+        else:
+            log_info("State file does not exist, starting with no sessions",
+                     path=state_file)
 
 @app.get("/viewmodel")
 async def status(request: Request):
     request.state.release_state_lock()
-    return request.session.viewmodel()
+    return request.state.session.viewmodel()
 
 @app.post("/create-database")
 async def create_database(request: Request,
@@ -229,37 +252,33 @@ async def create_database(request: Request,
     if MAX_ACTIVE_DATABASES <= active_dbs:
         raise HTTPException(status_code=409,
                             detail="Maximum number of databases reached.")
-    session.state = SessionStatus.CREATING_DATABASE
+    session.status = SessionStatus.CREATING_DATABASE
     session.db = f"db_{os.urandom(8).hex()}"
-    await session.save()
-    request.state.release_state_lock()
     gui_secret = request.state.gui_secret
+    await state.set_session(gui_secret, session)
+    request.state.release_state_lock()
     db_name = session.db
     async def create_db_in_background():
         success = False
         try:
-            log_info(f"Creating database {db_name} in background to be used by "
-                     f"session {gui_secret}")
-            conn = mysql.connector.connect(**MYSQL_CONFIG)
-            cursor = conn.cursor()
-            cursor.execute(f"CREATE DATABASE `{db_name}`")
-            cursor.execute("USE benchmark")
-            call_sql = (
-                f"CALL generate_table_data("
-                f"'{db_name}',"             # database name
-                f"'bench_tbl',"             # table name
-                f"10,"                      # column count
-                f"100000,"                  # row count
-                f"1000,"                    # batch size
-                f"1)"                       # column_info
-            )
-            cursor.execute(call_sql)
-            conn.commit()
-            cursor.close()
-            conn.close()
+            log_info("Creating database in background",
+                     db_name=db_name,
+                     session=gui_secret)
+            await sql(
+                f"CREATE DATABASE `{db_name}`",
+                "USE benchmark",
+                (
+                    f"CALL generate_table_data("
+                    f"'{db_name}',"             # database name
+                    f"'bench_tbl',"             # table name
+                    f"10,"                      # column count
+                    f"100000,"                  # row count
+                    f"1000,"                    # batch size
+                    f"1)"                       # column_info
+                ))
             success = True
         except Exception as e:
-            log_error(f"Error creating database {db_name}")
+            log_error("Error creating database", db_name=db_name)
         async with state_lock:
             assert gui_secret in state.user_sessions, "Bug"
             session = state.user_sessions[gui_secret]
@@ -268,14 +287,12 @@ async def create_database(request: Request,
                 session.status = SessionStatus.NORMAL
                 if not success:
                     session.db = None
-                await session.save()
+                await state.set_session(gui_secret, session)
         if success:
             # Update NGINX config and reload
             await update_nginx_config()
         else:
-            drop_database(db_name,
-                          f"it was intended for session {gui_secret} but "
-                          "creation failed")
+            await drop_database(db_name, "Creation failed", gui_secret)
     background_tasks.add_task(create_db_in_background)
     # Return the same data as /viewmodel
     return session.viewmodel()
@@ -288,13 +305,13 @@ async def run_locust(request: Request):
         # Hopefully holding state_lock is enough to read .locust_port_offset
         # from all sessions, since we only write it here under the same lock.
         used = {s.locust_port_offset for s in state.user_sessions.values()}
-        while state.next_locust_port_offset in used:
-            state.next_locust_port_offset = \
-                (state.next_locust_port_offset + 1) % 10_000
-        session.locust_port_offset = state.next_locust_port_offset
-        state.next_locust_port_offset = \
-            (state.next_locust_port_offset + 1) % 10000
-        await state.save_toplevel()
+        next_offset = state.next_locust_port_offset
+        while next_offset in used:
+            next_offset = (next_offset + 1) % 10_000
+        session.locust_port_offset = next_offset
+        next_offset = (next_offset + 1) % 10000
+        await state.set_next_locust_port_offset(next_offset)
+        await state.set_session(gui_secret, session)
     request.state.release_state_lock()
     locust_master_port = 33000 + session.locust_port_offset
     locust_http_port = 44000 + session.locust_port_offset
@@ -307,16 +324,13 @@ async def run_locust(request: Request):
         raise HTTPException(status_code=409,
                             detail="Locust already running")
     session.status = SessionStatus.STARTING_LOCUST
+    gui_secret = request.state.gui_secret
+    await state.set_session(gui_secret, session)
     db_name = session.db
     try:
-        conn = mysql.connector.connect(**MYSQL_CONFIG)
-        cursor = conn.cursor()
-        cursor.execute(f"USE {db_name}")
+        await sql(f"USE {db_name}")
     except:
         raise HTTPException(status_code=404, detail="Database not found")
-    finally:
-        cursor.close()
-        conn.close()
 
     def daemon(outpath, errpath, *cmd):
         with open(outpath, "w") as out, open(errpath, "w") as err:
@@ -328,8 +342,6 @@ async def run_locust(request: Request):
                 start_new_session=True,
                 close_fds=True)
             return proc.pid
-
-    gui_secret = request.state.gui_secret
 
     # Start master
     master_pid = daemon(
@@ -345,9 +357,9 @@ async def run_locust(request: Request):
         "--web-port", str(locust_http_port),
         "--master",
     )
-    log_info(f"Started locust master with PID {master_pid} for session {gui_secret}")
+    log_info("Started locust master", pid=master_pid, session=gui_secret)
     session.locust_pids = [master_pid]
-    await session.save()
+    await state.set_session(gui_secret, session)
     time.sleep(1)
 
     # Start workers
@@ -361,11 +373,14 @@ async def run_locust(request: Request):
             "--worker",
             "--master-port", str(locust_master_port),
         )
-        log_info(f"Started locust worker {i} with PID {worker_pid} for session {gui_secret}")
+        log_info("Started locust worker", worker_idx=i, pid=worker_pid, session=gui_secret)
         session.locust_pids = [*session.locust_pids, worker_pid]
-        await session.save()
+        await state.set_session(gui_secret, session)
 
-    return request.session.viewmodel()
+    session.status = SessionStatus.NORMAL
+    await state.set_session(gui_secret, session)
+
+    return session.viewmodel()
 
 # WARNING: Keep this in sync with nginx-dynamic.conf generation in ../cluster_ctl
 async def update_nginx_config():
@@ -412,8 +427,8 @@ async def update_nginx_config():
              "-e", os.environ['NGINX_ERROR_LOG']],
             check=True)
 
-async def maintenance():
-    while True:
+async def maintenance(stop: asyncio.Event):
+    while not stop.is_set():
         until = time.time()
         sessions_to_remove = []
         need_nginx_reconfig = False
@@ -422,20 +437,15 @@ async def maintenance():
                 async with session.lock:
                     if session.status != SessionStatus.NORMAL:
                         continue
-                    if until < session["expires_at"]:
+                    if until < session.expires_at:
                         continue
                     # Change session name, so that the user can create a new
                     # session right away.
                     rm_name = f"{gui_secret}_removing_{os.urandom(3).hex()}"
-                    us_change = lambda d: {(rm_name if k == gui_secret else k): v
-                                           for k, v in d.items()}
-                    state.user_sessions = us_change(state.user_sessions)
+                    state.set_session(rm_name, session)
+                    state.rm_session(gui_secret)
                     sessions_to_remove.append(rm_name)
-                    await change_persisted_state_atomically(lambda data: {
-                        **data,
-                        "user_sessions": us_change(data["user_sessions"]),
-                    })
-                    log_info(f"Starting cleanup of session {gui_secret} (renamed to {rm_name})")
+                    log_info("Starting cleanup", session=gui_secret, session_renamed_to=rm_name)
                     need_nginx_reconfig = True
         if need_nginx_reconfig:
             await update_nginx_config()
@@ -445,36 +455,40 @@ async def maintenance():
                 session = state.user_sessions[session_name]
                 await session.lock.acquire()
             if session.db:
-                drop_database(session.db, f"it belongs to session {session_name}")
+                await drop_database(session.db, "Session cleanup", session_name)
             if session.locust_pids:
-                await kill_pids(session.locust_pids,
-                                f"it belongs to session {session_name}")
+                await kill_pids(session.locust_pids, session_name)
             async with state_lock:
-                us_change = lambda d: {k: v for k, v in d.items()
-                                       if k != session_name}
-                state.user_sessions = us_change(state.user_sessions)
-                await change_persisted_state_atomically(lambda data: {
-                    **data,
-                    "user_sessions": us_change(data["user_sessions"]),
-                })
-            log_info(f"Cleanup of session {session_name} done")
+                state.rm_session(session_name)
+            log_info("Cleanup done", session=session_name)
         await asyncio.sleep(10)
 
-def drop_database(db: str, reason: str) -> None:
-    log_info(f"Dropping database {db} because {reason}")
-    conn = mysql.connector.connect(**MYSQL_CONFIG)
-    cursor = conn.cursor()
-    cursor.execute(f"DROP DATABASE IF EXISTS `{db}`")
-    conn.commit()
-    cursor.close()
-    conn.close()
-    log_info(f"Dropping database {db} done")
+async def drop_database(db_name: str, reason, session) -> None:
+    log_info("Dropping database",
+             db_name=db_name,
+             reason=reason,
+             session=session)
+    await sql(f"DROP DATABASE IF EXISTS `{db_name}`")
+    log_info("Dropping database done", db_name=db_name, session=session)
 
-async def kill_pids(pids: List[int], reason: str) -> None:
-    await asyncio.gather(*(kill_pid(pid, reason) for pid in pids))
+async def sql(*statements):
+    def blocking_db_work():
+        conn = mysql.connector.connect(**MYSQL_CONFIG)
+        cursor = conn.cursor()
+        try:
+            for statement in statements:
+                cursor.execute(statement)
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+    await asyncio.to_thread(blocking_db_work)
 
-async def kill_pid(pid: int, reason: str) -> None:
-    log_info(f"Terminating process {pid} because {reason}")
+async def kill_pids(pids: List[int], session_name: str) -> None:
+    await asyncio.gather(*(kill_pid(pid, session_name) for pid in pids))
+
+async def kill_pid(pid: int, session_name: str) -> None:
+    log_info("Terminating process", pid=pid, session=session_name)
     do_kill = False
     term_count = 0
     kill_count = 0
@@ -485,23 +499,33 @@ async def kill_pid(pid: int, reason: str) -> None:
             os.kill(pid, signal.SIGKILL if do_kill else signal.SIGTERM)
         except ProcessLookupError:
             if term_count == 0:
-                log_info(f"Process {pid} already gone")
+                log_info("Process already gone", pid=pid, session=session_name)
             elif kill_count > 0:
-                log_info(f"Process {pid} exited after {term_count} SIGTERMs and"
-                         f" {kill_count} SIGKILLs")
+                log_info("Process exited after SIGKILL",
+                         pid=pid,
+                         session=session_name,
+                         sigterm_count=term_count,
+                         sigkill_count=kill_count)
             else:
-                log_info(f"Process {pid} terminated after {term_count}"
-                         " SIGTERMs")
+                log_info("Process exited after SIGTERM",
+                         pid=pid,
+                         session=session_name,
+                         sigterm_count=term_count)
             return
         if do_kill:
             kill_count += 1
         else:
             term_count += 1
         if kill_count == 1:
-            log_info(f"Process {pid} did not terminate after {term_count} "
-                     f"attempts, using SIGKILL from now on.")
+            log_info("Process hasn't terminated, using SIGKILL from now on",
+                     pid=pid,
+                     session=session_name,
+                     sigterm_count=term_count)
         if kill_count == 100:
-            log_info(f"Process {pid} did not exit after {term_count} SIGTERMs"
-                     f" and {kill_count} SIGKILLs, giving up.")
+            log_info("Process did not exit despite many SIGKILLs, giving up",
+                     pid=pid,
+                     session=session_name,
+                     sigterm_count=term_count,
+                     sigkill_count=kill_count)
             return
         await asyncio.sleep(1)
