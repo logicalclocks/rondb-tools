@@ -431,7 +431,7 @@ async def run_locust(request: Request,
             await state.set_session(gui_secret, session)
         # Update NGINX config and reload
         await update_nginx_config()
-    background_tasks.add_task(start_locust_in_background())
+    background_tasks.add_task(start_locust_in_background)
     return session.viewmodel()
 
 # WARNING: Keep this in sync with nginx-dynamic.conf generation in ../cluster_ctl
