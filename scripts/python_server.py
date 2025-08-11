@@ -78,13 +78,14 @@ class UserSession:
         """
         Return a view model of this session, suitable for the GUI.
         """
+        normal = self.status == SessionStatus.NORMAL
         return {
             "status": self.status.name,
             "message": self.user_message,
-            "locust_running": self.locust_pids is not None,
+            "locust_running": normal and self.locust_pids is not None,
             "locust_workers": (
                 0 if self.locust_pids is None else len(self.locust_pids)-1),
-            "has_db": self.db is not None,
+            "has_db": normal and self.db is not None,
             "expires_at": self.expires_at,
             "default_grafana_dashboard": DEFAULT_GRAFANA_DASHBOARD,
         }

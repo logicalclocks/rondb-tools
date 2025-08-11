@@ -93,12 +93,6 @@
   <body>
     <div class="wrap">
       <h1>RDRS Demo Control</h1>
-      <p class="sub">Authenticated via HttpOnly cookie. The UI reflects <em>only</em> the server's view model and a possible inconsistency flag.</p>
-
-      <div id="inconsistency" class="banner" role="alert" aria-live="assertive">
-        <div><strong>Inconsistent state detected.</strong> Please try to <span class="mono">DROP</span> and re-create the database, then continue.</div>
-        <div class="actions"><button id="ackInconsistency">OK</button></div>
-      </div>
 
       <div class="grid" style="margin-bottom:16px;">
         <section class="card" aria-labelledby="statusH">
@@ -119,15 +113,11 @@
           <div id="msg" role="status" aria-live="polite" style="margin-top:10px; min-height:1.2em; color: var(--muted);"></div>
         </section>
       </div>
-
-      <footer>Auto-refreshing every ~3s. No secrets in headers or URLs.</footer>
     </div>
 
     <script>
       // --- State ---
       let vm = null;
-      let expiresAt = null;
-      let inconsistency = false;
 
       // --- DOM shortcuts ---
       const $ = (id) => document.getElementById(id);
@@ -135,44 +125,33 @@
         dbPill: $("dbPill"), dbDot: $("dbDot"), dbText: $("dbText"),
         locPill: $("locustPill"), locDot: $("locustDot"), locText: $("locustText"),
         workers: $("workers"), ttl: $("ttl"), msg: $("msg"),
-        btnCreate: $("btnCreate"), btnRun: $("btnRun"), btnGrafana: $("btnGrafana"), btnLocust: $("btnLocust"),
-        banner: $("inconsistency"), ack: $("ackInconsistency")
+        btnCreate: $("btnCreate"), btnRun: $("btnRun"), btnGrafana: $("btnGrafana"), btnLocust: $("btnLocust")
       };
 
       // --- Utilities ---
       const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-      const formatTTL = (secs) => {
-        secs = Math.max(0, Math.floor(secs));
-        const m = Math.floor(secs / 60); const s = secs % 60;
-        return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-      };
-      function setPill(dotEl, textEl, ok, label, warn=false){
-        dotEl.className = 'dot ' + (ok ? 'ok' : (warn ? 'warn' : 'err'));
+      function setPill(dotEl, textEl, ok, label){
+        dotEl.className = 'dot ' + (ok ? 'ok' : 'warn');
         textEl.textContent = label;
       }
-      function setMsg(text, kind='info'){
+      function setMsg(text, kind='info') {
         const colors = { info: 'var(--muted)', warn: 'var(--warn)', err: 'var(--err)', ok: 'var(--ok)' };
         el.msg.style.color = colors[kind] || colors.info;
         el.msg.textContent = text || '';
       }
-      function showInconsistency(show){
-        inconsistency = !!show;
-        el.banner.style.display = inconsistency ? 'block' : 'none';
-      }
 
-      // --- Render strictly from vm + inconsistency ---
+      // --- Render strictly from vm ---
       function render(){
         if(!vm) return;
         // DB
         const hasDB = !!vm.has_db;
         setPill(el.dbDot, el.dbText, hasDB, hasDB ? 'Created' : 'Not created');
+        // Message
+        setMsg(vm.user_message);
         // Locust
         const locRunning = !!vm.locust_running;
-        setPill(el.locDot, el.locText, locRunning, locRunning ? 'Running' : 'Stopped', vm.status !== 'NORMAL');
+        setPill(el.locDot, el.locText, locRunning, locRunning ? 'Running' : 'Stopped');
         el.workers.textContent = Number(vm.locust_workers || 0);
-        // TTL
-        expiresAt = Number(vm.expires_at || 0);
-        el.ttl.textContent = formatTTL(expiresAt - Date.now()/1000);
         // Enable/disable purely from vm
         el.btnCreate.disabled = !(vm.status === 'NORMAL' && !hasDB);
         el.btnRun.disabled = !(vm.status === 'NORMAL' && hasDB && !locRunning);
@@ -183,8 +162,6 @@
         const linkDisabled = !locRunning;
         el.btnLocust.classList.toggle('disabled', linkDisabled);
         el.btnLocust.setAttribute('aria-disabled', String(linkDisabled));
-        // Banner visibility
-        showInconsistency(inconsistency);
       }
 
       // --- Poll /viewmodel continuously ---
@@ -205,16 +182,12 @@
       async function postJSON(path){
         try{
           const res = await fetch(path, { method:'POST', credentials:'same-origin' });
-          if(res.status === 409){ setMsg('Busy, try again shortly.', 'warn'); return null; }
-          if(res.status === 404){ setMsg('State mismatch. Please drop and re-create the database.', 'err'); showInconsistency(true); return null; }
-          if(!res.ok){ setMsg(`${path} failed (${res.status})`, 'err'); return null; }
+          if(!res.ok){ setMsg(`${path} failed with HTTP (${res.status})`, 'err'); return null; }
           const data = await res.json();
-          vm = data; // immediate refresh from response
-          setMsg('Done.', 'ok');
-          return data;
+          vm = data;
+          setMsg('');
         }catch(e){
           setMsg(`${path} failed: ${e.message}`, 'err');
-          return null;
         }finally{
           render();
         }
@@ -223,9 +196,6 @@
       // Button handlers
       el.btnCreate.addEventListener('click', () => postJSON('/create-database'));
       el.btnRun.addEventListener('click', () => postJSON('/run-locust'));
-      el.btnGrafana.addEventListener('click', () => {/* no-op */});
-      el.btnLocust.addEventListener('click', () => {/* no-op */});
-      el.ack.addEventListener('click', () => showInconsistency(false)); // "resolved" = user clicks OK
 
       // --- Tickers ---
       (async function pollLoop(){
@@ -234,7 +204,17 @@
           await sleep(3000);
         }
       })();
-      setInterval(() => { if(expiresAt) el.ttl.textContent = formatTTL(expiresAt - Date.now()/1000); }, 1000);
+      setInterval(() => {
+        expiresAt = Number(vm.expires_at || 0);
+        if(expiresAt) {
+          secs = Math.floor(expiresAt - Date.now()/1000);
+          const m = Math.floor(secs / 60);
+          const s = secs % 60;
+          el.ttl.textContent =  `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        } else {
+          el.ttl.textContent = '-';
+        }
+      }, 1000);
 
       render();
     </script>
