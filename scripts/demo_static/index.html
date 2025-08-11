@@ -69,7 +69,7 @@
                 alert('Please create the database first to get the gui_secret!');
                 return;
             }
-            const url = `http://${location.hostname}:8080/secret=${guiSecret}/grafana/d/rdrs`;
+            const url = `http://${location.hostname}:8080/secret=${guiSecret}/grafana/d/rdrs`; // change Change to rdrs[12]_overview, but how to determine that? Perhaps get it from the same place as guiSecret. /viewmodel is now implemented.
             window.open(url, '_blank');  // opens in new tab
         }
 
