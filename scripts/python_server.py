@@ -212,7 +212,7 @@ async def startup():
                         expires_at=session_json["expires_at"],
                         )
             for gui_secret, session in state.user_sessions.items():
-                with session.lock:
+                async with session.lock:
                     if session.status == SessionStatus.CREATING_DATABASE:
                         await drop_database(
                             session.db,
