@@ -1,86 +1,242 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>RonDB Control UI</title>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RDRS Demo</title>
+    <link rel="icon" href="/favicon.png" />
     <style>
-        body { font-family: Arial, sans-serif; padding: 2em; background: #f9f9f9; }
-        button { padding: 0.5em 1em; margin: 0.5em 0; }
-        input { padding: 0.5em; margin: 0.5em 0; }
+      /* RonDB style-guide aligned tokens */
+      :root{
+        --bg: #161616;          /* Quantum */
+        --panel: #1e1e1e;       /* Surface on Quantum */
+        --text: #FAF9F6;        /* Off-white */
+        --muted: #DFDFDF;       /* Sipher */
+        --accent: #4593E0;      /* Orbital */
+        --brand: #FFDF00;       /* Terminal */
+        --ok: #57BE97;          /* Circuit */
+        --warn: #FE8C00;        /* Giga */
+        --err: #E68108;         /* Plasma */
+        --border: #484848;      /* Matrix */
+      }
+
+      html, body { height: 100%; }
+      body{
+        margin:0;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .wrap{ max-width: 900px; margin: 40px auto; padding: 0 16px; }
+      h1{ font-size:1.8rem; letter-spacing:.2px; margin:0 0 8px; }
+      p.sub{ margin:0 0 24px; color: var(--muted); }
+
+      .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap:16px; }
+      .card{
+        background: var(--panel);
+        border:1px solid var(--border);
+        border-radius:14px;
+        padding:16px;
+        box-shadow: 0 6px 20px rgba(0,0,0,.35);
+      }
+      .card h2{ margin:0 0 10px; font-size:1.1rem; }
+      .row{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 0; border-bottom:1px dashed rgba(255,255,255,.08); }
+      .row:last-child{ border-bottom:0; }
+
+      .k{ color: var(--muted); font-size:.95rem; }
+      .v{ font-variant-numeric: tabular-nums; }
+
+      .btns{ display:grid; gap:10px; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); }
+      button, .linkbtn{
+        appearance:none;
+        border:1px solid var(--border);
+        border-radius:12px;
+        padding:10px 14px;
+        background:#222; color: var(--text);
+        font-weight:560; cursor:pointer;
+        transition: transform .02s ease, opacity .15s ease, background .15s ease, border-color .15s ease;
+        text-decoration:none; display:inline-block; text-align:center;
+      }
+      button:hover, .linkbtn:hover{ background:#262626; border-color: var(--accent); }
+      button:active{ transform: translateY(1px); }
+      button[disabled]{ opacity:.45; cursor:not-allowed; }
+      .linkbtn.disabled{ opacity:.45; pointer-events:none; }
+
+      .pill{ display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); font-size:.92rem; }
+      .dot{ width:8px; height:8px; border-radius:999px; display:inline-block; }
+      .ok{ background: var(--ok); }
+      .warn{ background: var(--warn); }
+      .err{ background: var(--err); }
+
+      .banner{
+        position: sticky; top:0; z-index:50;
+        backdrop-filter: blur(6px);
+        background: rgba(230,129,8,.18); /* Plasma tint */
+        border:1px solid var(--err);
+        color: var(--text);
+        padding:14px 16px; margin-bottom:16px; border-radius:12px; display:none;
+      }
+      .banner strong{ color: var(--text); }
+      .banner .actions{ margin-top:8px; }
+
+      .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      footer{ margin-top:26px; color: var(--muted); font-size:.9rem; }
+
+      /* Focus visibility per style guide (Terminal) */
+      :is(button,.linkbtn,[href],[tabindex]):focus-visible{
+        outline: 2px solid var(--brand);
+        outline-offset: 2px;
+      }
     </style>
-    <link href="favicon.png" rel="shortcut icon" />
-</head>
-<body>
-    <h2>Start Test Environment</h2>
-    <button onclick="createDatabase()">Create Database</button>
-    <div id="db-spinner" style="display:none; margin: 1em 0; color: #555;">Creating database...</div>
-    <div id="db-status"></div>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>RDRS Demo Control</h1>
+      <p class="sub">Authenticated via HttpOnly cookie. The UI reflects <em>only</em> the server's view model and a possible inconsistency flag.</p>
 
-    <h2>Run Locust</h2>
-    <label>Worker Count:</label>
-    <input id="workerCount" type="number" value="1" min="1" max="4"/><!-- todo get max from somewhere -->
-    <button onclick="runLocust()">Run Locust</button>
-    <div id="locust-status"></div>
+      <div id="inconsistency" class="banner" role="alert" aria-live="assertive">
+        <div><strong>Inconsistent state detected.</strong> Please try to <span class="mono">DROP</span> and re-create the database, then continue.</div>
+        <div class="actions"><button id="ackInconsistency">OK</button></div>
+      </div>
 
-    <h2>Open Monitoring Interfaces</h2>
-    <button onclick="openGrafana()">Open Grafana</button>
-    <button onclick="openLocustUI()">Open Locust UI</button>
+      <div class="grid" style="margin-bottom:16px;">
+        <section class="card" aria-labelledby="statusH">
+          <h2 id="statusH">Status</h2>
+          <div class="row"><div class="k">Database</div><div class="v"><span id="dbPill" class="pill"><span id="dbDot" class="dot"></span><span id="dbText">—</span></span></div></div>
+          <div class="row"><div class="k">Locust</div><div class="v"><span id="locustPill" class="pill"><span id="locustDot" class="dot"></span><span id="locustText">—</span></span></div></div>
+          <div class="row"><div class="k">Workers</div><div class="v"><span id="workers">0</span></div></div>
+          <div class="row"><div class="k">Session TTL</div><div class="v"><span id="ttl" class="mono">--:--</span></div></div>
+        </section>
+        <section class="card" aria-labelledby="actionsH">
+          <h2 id="actionsH">Actions</h2>
+          <div class="btns">
+            <button id="btnCreate">Create Database</button>
+            <button id="btnRun">Run Locust</button>
+            <a id="btnGrafana" class="linkbtn" target="_blank" rel="noopener">Open Grafana</a>
+            <a id="btnLocust" class="linkbtn" target="_blank" rel="noopener">Open Locust UI</a>
+          </div>
+          <div id="msg" role="status" aria-live="polite" style="margin-top:10px; min-height:1.2em; color: var(--muted);"></div>
+        </section>
+      </div>
+
+      <footer>Auto-refreshing every ~3s. No secrets in headers or URLs.</footer>
+    </div>
 
     <script>
-        let guiSecret = null;  // store gui_secret globally
-        async function createDatabase() {
-            const spinner = document.getElementById('db-spinner');
-            spinner.style.display = 'block'; // show spinner
-            try {
-                const res = await fetch('/create-database', {
-                    method: 'POST',
-                });
-                const data = await res.json();
-                guiSecret = data.gui_secret;  // store gui_secret in global variable
-                document.getElementById('db-status').innerText = JSON.stringify(data, null, 2);
-            } catch (err) {
-                document.getElementById('db-status').innerText = 'Error creating database.';
-            } finally {
-                spinner.style.display = 'none'; // hide spinner
-            }
-        }
+      // --- State ---
+      let vm = null;
+      let expiresAt = null;
+      let inconsistency = false;
 
-        async function runLocust() {
-            if (!guiSecret) {
-                alert('Please create the database first to get the gui_secret!');
-                return;
-            }
-            const count = document.getElementById('workerCount').value;
-            try {
-                const res = await fetch(`/run-locust?worker_count=${count}`, {
-                    method: 'POST',
-                    headers: {
-                        'X-AUTH': guiSecret   // add the gui_secret as header here
-                    }
-                });
-                const data = await res.json();
-                document.getElementById('locust-status').innerText = JSON.stringify(data, null, 2);
-            } catch (err) {
-                document.getElementById('locust-status').innerText = 'Error starting locust.';
-            }
-        }
+      // --- DOM shortcuts ---
+      const $ = (id) => document.getElementById(id);
+      const el = {
+        dbPill: $("dbPill"), dbDot: $("dbDot"), dbText: $("dbText"),
+        locPill: $("locustPill"), locDot: $("locustDot"), locText: $("locustText"),
+        workers: $("workers"), ttl: $("ttl"), msg: $("msg"),
+        btnCreate: $("btnCreate"), btnRun: $("btnRun"), btnGrafana: $("btnGrafana"), btnLocust: $("btnLocust"),
+        banner: $("inconsistency"), ack: $("ackInconsistency")
+      };
 
-        function openGrafana() {
-            if (!guiSecret) {
-                alert('Please create the database first to get the gui_secret!');
-                return;
-            }
-            const url = `http://${location.hostname}:8080/secret=${guiSecret}/grafana/d/rdrs`; // change Change to rdrs[12]_overview, but how to determine that? Perhaps get it from the same place as guiSecret. /viewmodel is now implemented.
-            window.open(url, '_blank');  // opens in new tab
-        }
+      // --- Utilities ---
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const formatTTL = (secs) => {
+        secs = Math.max(0, Math.floor(secs));
+        const m = Math.floor(secs / 60); const s = secs % 60;
+        return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      };
+      function setPill(dotEl, textEl, ok, label, warn=false){
+        dotEl.className = 'dot ' + (ok ? 'ok' : (warn ? 'warn' : 'err'));
+        textEl.textContent = label;
+      }
+      function setMsg(text, kind='info'){
+        const colors = { info: 'var(--muted)', warn: 'var(--warn)', err: 'var(--err)', ok: 'var(--ok)' };
+        el.msg.style.color = colors[kind] || colors.info;
+        el.msg.textContent = text || '';
+      }
+      function showInconsistency(show){
+        inconsistency = !!show;
+        el.banner.style.display = inconsistency ? 'block' : 'none';
+      }
 
-        function openLocustUI() {
-            if (!guiSecret) {
-                alert('Please create the database first to get the gui_secret!');
-                return;
-            }
-            const url = `http://${location.hostname}:8080/secret=${guiSecret}/locust`;
-            window.open(url, '_blank');
+      // --- Render strictly from vm + inconsistency ---
+      function render(){
+        if(!vm) return;
+        // DB
+        const hasDB = !!vm.has_db;
+        setPill(el.dbDot, el.dbText, hasDB, hasDB ? 'Created' : 'Not created');
+        // Locust
+        const locRunning = !!vm.locust_running;
+        setPill(el.locDot, el.locText, locRunning, locRunning ? 'Running' : 'Stopped', vm.status !== 'NORMAL');
+        el.workers.textContent = Number(vm.locust_workers || 0);
+        // TTL
+        expiresAt = Number(vm.expires_at || 0);
+        el.ttl.textContent = formatTTL(expiresAt - Date.now()/1000);
+        // Enable/disable purely from vm
+        el.btnCreate.disabled = !(vm.status === 'NORMAL' && !hasDB);
+        el.btnRun.disabled = !(vm.status === 'NORMAL' && hasDB && !locRunning);
+        // Links
+        const dash = vm.default_grafana_dashboard || '';
+        el.btnGrafana.href = dash ? `/grafana/d/${dash}` : '/grafana/';
+        el.btnLocust.href = '/locust/';
+        const linkDisabled = !locRunning;
+        el.btnLocust.classList.toggle('disabled', linkDisabled);
+        el.btnLocust.setAttribute('aria-disabled', String(linkDisabled));
+        // Banner visibility
+        showInconsistency(inconsistency);
+      }
+
+      // --- Poll /viewmodel continuously ---
+      async function fetchViewModel(){
+        try{
+          const res = await fetch('/viewmodel', { credentials:'same-origin' });
+          if(!res.ok) throw new Error(`GET /viewmodel ${res.status}`);
+          vm = await res.json();
+          setMsg('');
+        }catch(e){
+          setMsg('Unable to fetch status. Retrying…', 'warn');
+        }finally{
+          render();
         }
+      }
+
+      // --- Actions ---
+      async function postJSON(path){
+        try{
+          const res = await fetch(path, { method:'POST', credentials:'same-origin' });
+          if(res.status === 409){ setMsg('Busy, try again shortly.', 'warn'); return null; }
+          if(res.status === 404){ setMsg('State mismatch. Please drop and re-create the database.', 'err'); showInconsistency(true); return null; }
+          if(!res.ok){ setMsg(`${path} failed (${res.status})`, 'err'); return null; }
+          const data = await res.json();
+          vm = data; // immediate refresh from response
+          setMsg('Done.', 'ok');
+          return data;
+        }catch(e){
+          setMsg(`${path} failed: ${e.message}`, 'err');
+          return null;
+        }finally{
+          render();
+        }
+      }
+
+      // Button handlers
+      el.btnCreate.addEventListener('click', () => postJSON('/create-database'));
+      el.btnRun.addEventListener('click', () => postJSON('/run-locust'));
+      el.btnGrafana.addEventListener('click', () => {/* no-op */});
+      el.btnLocust.addEventListener('click', () => {/* no-op */});
+      el.ack.addEventListener('click', () => showInconsistency(false)); // "resolved" = user clicks OK
+
+      // --- Tickers ---
+      (async function pollLoop(){
+        while(true){
+          await fetchViewModel();
+          await sleep(3000);
+        }
+      })();
+      setInterval(() => { if(expiresAt) el.ttl.textContent = formatTTL(expiresAt - Date.now()/1000); }, 1000);
+
+      render();
     </script>
-</body>
+  </body>
 </html>

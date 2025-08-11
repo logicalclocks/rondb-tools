@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Union, Optional, List
 from enum import Enum
 from contextlib import suppress, asynccontextmanager
+import shlex
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -58,23 +59,28 @@ class SessionStatus(Enum):
 class UserSession:
     def __init__(self,
                  status: SessionStatus = SessionStatus.NORMAL,
+                 user_message: Optional[str] = None,
                  locust_port_offset: Optional[int] = None,
                  locust_pids: Optional[List[int]] = None,
                  db: Optional[str] = None,
                  expires_at: Optional[float] = None,
                  ):
         self.status = status
+        self.user_message = user_message
         self.lock = asyncio.Lock()
         self.locust_port_offset = locust_port_offset
         self.locust_pids = locust_pids
         self.db = db
         self.expires_at = expires_at or (time.time() + SESSION_TTL)
+    def add_user_msg(self, msg: str) -> None:
+        self.user_message = msg
     def viewmodel(self) -> dict:
         """
         Return a view model of this session, suitable for the GUI.
         """
         return {
             "status": self.status.name,
+            "message": self.user_message,
             "locust_running": self.locust_pids is not None,
             "locust_workers": (
                 0 if self.locust_pids is None else len(self.locust_pids)-1),
@@ -93,6 +99,10 @@ class AppState:
             "next_locust_port_offset": self.next_locust_port_offset,
         })
     async def set_session(self, gui_secret, session) -> None:
+        """
+        Set a session for the given GUI secret. Caller must hold state_lock and
+        session.lock.
+        """
         self.user_sessions[gui_secret] = session
         await change_persisted_state_atomically(lambda data: {
             **data,
@@ -100,6 +110,7 @@ class AppState:
                 **data["user_sessions"],
                 gui_secret: {
                     "status": session.status.name,
+                    "user_message": session.user_message,
                     "locust_port_offset": session.locust_port_offset,
                     "locust_pids": session.locust_pids,
                     "db": session.db,
@@ -119,7 +130,7 @@ class AppState:
             })
 state = AppState()
 state_lock = asyncio.Lock()
-state_file = RUN_DIR / "demo_state.json"
+state_file = RUN_DIR / "demo/demo_state.json"
 state_file_lock = asyncio.Lock() # protects state_file
 async def change_persisted_state_atomically(func):
     data = {
@@ -206,6 +217,7 @@ async def startup():
                 for gui_secret, session_json in data["user_sessions"].items():
                     session = UserSession(
                         status=SessionStatus[session_json["status"]],
+                        user_message=session_json.get("user_message"),
                         locust_port_offset=session_json["locust_port_offset"],
                         locust_pids=session_json["locust_pids"],
                         db=session_json["db"],
@@ -232,7 +244,7 @@ async def startup():
                     state.user_sessions[gui_secret] = session
         else:
             log_info("State file does not exist, starting with no sessions",
-                     path=state_file)
+                     path=str(state_file))
 
 @app.get("/viewmodel")
 async def status(request: Request):
@@ -241,14 +253,10 @@ async def status(request: Request):
 
 @app.post("/create-database")
 async def create_database(request: Request,
-                          background_tasks: BackgroundTasks,
-                          response: Response):
+                          background_tasks: BackgroundTasks):
     session = request.state.session
-    if session.status == SessionStatus.CREATING_DATABASE:
-        raise HTTPException(status_code=409, detail="Busy creating database.")
-    if session.status == SessionStatus.STARTING_LOCUST:
-        raise HTTPException(status_code=409, detail="Busy starting locust.")
-    assert session.status == SessionStatus.NORMAL, "Bug"
+    if session.status != SessionStatus.NORMAL:
+        raise HTTPException(status_code=409, detail="Busy")
     if session.db is not None:
         raise HTTPException(status_code=409,
                             detail="Database already created for this session.")
@@ -284,12 +292,16 @@ async def create_database(request: Request,
                 ))
             success = True
         except Exception as e:
-            log_error("Error creating database", db_name=db_name)
+            log_error("Error creating database",
+                      db_name=db_name,
+                      session=gui_secret)
         async with state_lock:
-            assert gui_secret in state.user_sessions, "Bug"
             session = state.user_sessions[gui_secret]
             async with session.lock:
-                assert session.status == SessionStatus.CREATING_DATABASE, "Bug"
+                session.add_user_msg(
+                    "Database created successfully"
+                    if success else
+                    "Database creation failed")
                 session.status = SessionStatus.NORMAL
                 if not success:
                     session.db = None
@@ -304,8 +316,15 @@ async def create_database(request: Request,
     return session.viewmodel()
 
 @app.post("/run-locust")
-async def run_locust(request: Request):
+async def run_locust(request: Request,
+                     background_tasks: BackgroundTasks):
     session = request.state.session
+    gui_secret = request.state.gui_secret
+    if session.status != SessionStatus.NORMAL:
+        raise HTTPException(status_code=409, detail="Busy")
+    if session.locust_pids is not None:
+        raise HTTPException(status_code=409,
+                            detail="Locust already running")
     if session.locust_port_offset is None:
         # Pick a free port offset
         # Hopefully holding state_lock is enough to read .locust_port_offset
@@ -321,71 +340,97 @@ async def run_locust(request: Request):
     request.state.release_state_lock()
     locust_master_port = 33000 + session.locust_port_offset
     locust_http_port = 44000 + session.locust_port_offset
-    if session.status == SessionStatus.CREATING_DATABASE:
-        raise HTTPException(status_code=409, detail="Busy creating database.")
-    if session.status == SessionStatus.STARTING_LOCUST:
-        raise HTTPException(status_code=409, detail="Busy starting locust.")
-    assert session.status == SessionStatus.NORMAL, "Bug"
-    if session.locust_pids is not None:
-        raise HTTPException(status_code=409,
-                            detail="Locust already running")
     session.status = SessionStatus.STARTING_LOCUST
-    gui_secret = request.state.gui_secret
     await state.set_session(gui_secret, session)
     db_name = session.db
-    try:
-        await sql(f"USE {db_name}")
-    except:
-        raise HTTPException(status_code=404, detail="Database not found")
-
-    def daemon(outpath, errpath, *cmd):
-        with open(outpath, "w") as out, open(errpath, "w") as err:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=out,
-                stderr=err,
-                start_new_session=True,
-                close_fds=True)
-            return proc.pid
-
-    # Start master
-    master_pid = daemon(
-        f"{RUN_DIR}/locust-{gui_secret}-master.log",
-        f"{RUN_DIR}/locust-{gui_secret}-master.err",
-        "locust",
-        "-f", f"{SCRIPTS_DIR}/locust_batch_read.py",
-        "--host", os.environ['RDRS_URI'],
-        "--batch-size=100",
-        "--table-size=100000",
-        f"--database-name={db_name}",
-        "--master-bind-port", str(locust_master_port),
-        "--web-port", str(locust_http_port),
-        "--master",
-    )
-    log_info("Started locust master", pid=master_pid, session=gui_secret)
-    session.locust_pids = [master_pid]
-    await state.set_session(gui_secret, session)
-    time.sleep(1)
-
-    # Start workers
-    worker_pids = []
-    for i in range(LOCUST_WORKER_COUNT):
-        worker_pid = daemon(
-            f"{RUN_DIR}/locust-{gui_secret}-worker-{i}.log",
-            f"{RUN_DIR}/locust-{gui_secret}-worker-{i}.err",
-            "locust",
-            "-f", "/home/ubuntu/scripts/locust_batch_read.py",
-            "--worker",
-            "--master-port", str(locust_master_port),
-        )
-        log_info("Started locust worker", worker_idx=i, pid=worker_pid, session=gui_secret)
-        session.locust_pids = [*session.locust_pids, worker_pid]
-        await state.set_session(gui_secret, session)
-
-    session.status = SessionStatus.NORMAL
-    await state.set_session(gui_secret, session)
-
+    async def start_locust_in_background():
+        async def err(problem):
+            log_error("Error attempting to start locust",
+                      problem=problem,
+                      session=gui_secret)
+            async with session.lock:
+                pids_to_kill = session.locust_pids
+                session.add_user_msg(problem)
+                await state.set_session(gui_secret, session)
+            if pids_to_kill:
+                await kill_pids(pids_to_kill, gui_secret)
+            async with session.lock:
+                session.locust_pids = []
+                session.status = SessionStatus.NORMAL
+                await state.set_session(gui_secret, session)
+        try:
+            await sql(f"USE {db_name}")
+        except:
+            await err("Database not found")
+            return
+        def daemon(outpath, errpath, *cmd):
+            # Detach via shell. Create its own session and background, capture the
+            # PID and exit. When the shell exits, the process will get PID 1 as
+            # parent, which will reap it as necessary.
+            launcher = subprocess.run(
+                ["bash", "-lc",
+                 f"setsid -- {shlex.join(cmd)}"
+                 " < /dev/null"
+                 f" >> {shlex.quote(outpath)}"
+                 f" 2>> {shlex.quote(errpath)} &"
+                 " echo $!"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                close_fds=True,
+                check=True)
+            return int(launcher.stdout.strip())
+        try:
+            # Start master
+            master_pid = daemon(
+                f"{RUN_DIR}/locust/{gui_secret}-master.log",
+                f"{RUN_DIR}/locust/{gui_secret}-master.err",
+                "locust",
+                "-f", f"{SCRIPTS_DIR}/locust_batch_read.py",
+                "--host", os.environ['RDRS_URI'],
+                "--batch-size=100",
+                "--table-size=100000",
+                f"--database-name={db_name}",
+                "--master-bind-port", str(locust_master_port),
+                "--web-port", str(locust_http_port),
+                "--master",
+            )
+            log_info("Started locust master", pid=master_pid, session=gui_secret)
+        except:
+            await err("Could not start locust master process")
+            return
+        async with session.lock:
+            session.locust_pids = [master_pid]
+            await state.set_session(gui_secret, session)
+        time.sleep(1)
+        # Start workers
+        for i in range(LOCUST_WORKER_COUNT):
+            try:
+                worker_pid = daemon(
+                    f"{RUN_DIR}/locust/{gui_secret}-worker-{i}.log",
+                    f"{RUN_DIR}/locust/{gui_secret}-worker-{i}.err",
+                    "locust",
+                    "-f", "/home/ubuntu/scripts/locust_batch_read.py",
+                    "--worker",
+                    "--master-port", str(locust_master_port),
+                )
+                log_info("Started locust worker",
+                         worker_idx=i,
+                         pid=worker_pid,
+                         session=gui_secret)
+            except:
+                await err("Could not start locust worker process")
+                return
+            async with session.lock:
+                session.locust_pids = [*session.locust_pids, worker_pid]
+                await state.set_session(gui_secret, session)
+        async with session.lock:
+            session.status = SessionStatus.NORMAL
+            session.add_user_msg("locust started")
+            await state.set_session(gui_secret, session)
+        # Update NGINX config and reload
+        await update_nginx_config()
+    background_tasks.add_task(start_locust_in_background())
     return session.viewmodel()
 
 # WARNING: Keep this in sync with nginx-dynamic.conf generation in ../cluster_ctl
@@ -398,7 +443,7 @@ async def update_nginx_config():
     async with state_lock:
         content = [
             # Map GUI secret to validity
-             'map $gui_secret $secret_is_valid {',
+             'map $gui_secret $grafana_access {',
             f'    "{GUI_SECRET}" 1;',
             *[f'    "{gui_secret}" 1;'
               for gui_secret in state.user_sessions],
@@ -413,8 +458,8 @@ async def update_nginx_config():
               for gui_secret, session in state.user_sessions.items()
               # Could be false for renamed sessions in process of deletion
               if validate_gui_secret(gui_secret)
-              # Only allow users with active database
-              and session.db is not None
+              # Filter out None values
+              and session.locust_port_offset is not None
               ],
              '    default 0;',
              '}',

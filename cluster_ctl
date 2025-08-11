@@ -493,7 +493,7 @@ def generate_config_files():
        '      return 302 $2;',
        '    }',
        '    location /grafana {',
-       '      if ($secret_is_valid = 0) {',
+       '      if ($grafana_access = 0) {',
        '        return 403;',
        '      }',
        '      proxy_http_version 1.1;',
@@ -502,7 +502,7 @@ def generate_config_files():
       f'      proxy_pass http://{first("grafana").private_ip}:3000;',
        '    }',
        '    location /locust/ {',
-       '      if ($secret_is_valid = 0) {',
+       '      if ($locust_http_port = 0) {',
        '        return 403;',
        '      }',
        '      proxy_http_version 1.1;',
@@ -523,7 +523,7 @@ def generate_config_files():
     # WARNING: nginx-dynamic.conf is re-generated in scripts/python_server.py,
     # so keep the logic in sync.
     w("config_files/nginx-dynamic.conf",
-       'map $gui_secret $secret_is_valid {',
+       'map $gui_secret $grafana_access {',
       f'    "{GUI_SECRET}" 1;',
        '    default 0;',
        '}',
@@ -855,9 +855,9 @@ def do_start_demo():
     check_failed()
     uri=lnk(f"http://{first('bench').public_ip}:8080/")
     print('To show demo server access logs, run:')
-    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo.log')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo/uvicorn.log')
     print('To show demo server error logs, run:')
-    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo.err')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo/uvicorn.err')
     print(f'Go to {uri} in your browser to see the demo UI.')
 
 # stop_demo command
