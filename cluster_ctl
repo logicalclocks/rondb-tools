@@ -588,7 +588,7 @@ def connectivity_check(node):
         if proc.returncode == 0 and proc.stdout.strip() == 'OK':
             return
         if attempt < attempts - 1:
-            print(f"{node.tui_name()} Connectivity check {attempt + 1} {red('failed')}, waiting {wait_time} seconds before trying againg...")
+            print(f"{node.tui_name()} Connectivity check {attempt + 1} {red('failed')}, waiting {wait_time} seconds before trying again...")
             time.sleep(wait_time)
     print(f"{node.tui_name()} Connectivity check {red('failed')} {attempts} times, giving up.")
     failed = True
