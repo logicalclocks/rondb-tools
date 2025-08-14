@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+import textwrap
+from pathlib import Path
+import subprocess
+import tempfile
+import sys
+
+# todo: firewall the subnets
+
+# The rondbdemo*.hops.works hosts are set up like this:
+# - Hostname set in /etc/hosts and /etc/hostname
+# - Joined to devnet VPN:
+#   apt-get -qy update && apt-get -qy install wireguard
+#   modprobe wireguard
+#   bash -c 'set -o pipefail; curl -fLsS https://repo.hops.works/vpn/oCetFIEGcL/devnet.py | sudo python3'
+# - Software and networking:
+#   ./rondbdemo_ctl setup_hosts
+# - VMs
+#   ./rondbdemo_ctl setup_vms
+
+IDENTITY_FILE="/home/user/p/security/id_rondbdemo"
+PUBKEY = Path(f"{IDENTITY_FILE}.pub").read_text().strip()
+
+class Host:
+    def __init__(self, name, ipv4_public, ipv6_subnet_64):
+        self.name = name
+        self.ipv4 = ipv4_public
+        self.ipv6 = f"{ipv6_subnet_64}::2"
+        self.ipv6_subnet_64 = ipv6_subnet_64
+        self.ipv6_subnet_80 = f"{ipv6_subnet_64}:5edd"
+        self.ipv6_bridge = f"{self.ipv6_subnet_80}::1"
+        self.user = "root"
+hosts=[
+    #    Name          Public IPv4        IPv6 Subnet/64
+    Host("rondbdemo0", "135.181.240.234", "2a01:4f9:3080:3e61"),
+    Host("rondbdemo1", "95.217.122.106",  "2a01:4f9:004a:3759"),
+    Host("rondbdemo2", "65.109.123.242",  "2a01:4f9:3051:1793"),
+]
+
+class VM:
+    def __init__(self, name, vcpus, ram, host_idx, ip_last):
+        self.name = name
+        self.vcpus = vcpus
+        self.ram = ram
+        self.host = hosts[host_idx]
+        self.ipv6 = f"{self.host.ipv6_subnet_80}::{ip_last}"
+        padded = f"0000{ip_last}"
+        # First byte must be xxxxxx10, the rest can be random.
+        self.mac = f"02:db:0e:ba:{padded[-4:-2]}:{padded[-2:]}"
+        self.user = "vagrant"
+vms=[
+    #   Name       vCPUs  RAM host IP_suffix
+    VM("ndb-mgmd",     1,  4,   2, "100"),
+    VM("ndbmtd-0",     4, 32,   0, "200"),
+    VM("ndbmtd-1",     4, 32,   1, "201"),
+    VM("mysql",        6,  8,   1, "300"),
+    VM("rdrs",        15, 48,   2, "400"),
+    VM("prometheus",   3, 12,   1, "500"),
+    VM("grafana",      3,  8,   1, "600"),
+    VM("bench",       12, 16,   0, "700"),
+]
+
+def txt(s):
+    if isinstance(s, list):
+        s = '\n'.join(s)
+    return textwrap.dedent(s).strip()+'\n'
+
+def setupscript(host):
+    content = f"""
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # Bridge for VMs
+        ip link show vmbr0 >/dev/null 2>&1 || ip link add vmbr0 type bridge
+        ip link set vmbr0 up
+        # Assign host's VM gateway inside your routed /64 (subnetted /80)
+        ip -6 addr show dev vmbr0 | grep -q {host.ipv6_bridge} ||
+        ip -6 addr add {host.ipv6_bridge}/80 dev vmbr0
+        # IPv6 Forwarding
+        sysctl -w net.ipv6.conf.all.forwarding=1
+        # Install Vagrant
+        wget -O - https://apt.releases.hashicorp.com/gpg | gpg --dearmor --batch --yes -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release; echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/hashicorp.list
+        export DEBIAN_FRONTEND=noninteractive
+        apt update
+        apt install -y vagrant qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils build-essential libvirt-dev ruby-dev
+        systemctl enable --now libvirtd
+        vagrant plugin install vagrant-libvirt
+    """
+    return txt(content)
+
+def vagrantfile(vm):
+    content = f"""
+        Vagrant.configure("2") do |config|
+          config.vm.box = "generic/ubuntu2204"
+          config.vm.hostname = "{vm.name}"
+          config.vm.provider :libvirt do |v|
+            v.cpus = {vm.vcpus}
+            v.memory = {vm.ram * 1024}
+            v.cpu_mode = "host-passthrough"
+            v.nic_model_type = "virtio"
+            v.graphics_type = "none"
+            v.video_type = "none"
+          end
+          # Attach to the internal bridge
+          config.vm.network "public_network",
+            type: "bridge",
+            dev: "vmbr0",
+            mac: "{vm.mac}"
+          # Static IPv6 inside the guest
+          config.vm.provision "shell", inline: <<-'SHELL'
+        for a in /proc/sys/net/ipv6/conf/*/disable_ipv6
+          do echo 0 | sudo tee $a >/dev/null
+        done
+        cat >/etc/netplan/60-vagrant.yaml <<'EOF'
+        network:
+          version: 2
+          ethernets:
+            vmbr:
+              match:
+                macaddress: {vm.mac}
+              set-name: vmbr
+              addresses:
+                - {vm.ipv6}/80
+              routes:
+                - to: default
+                  via: {vm.host.ipv6_bridge}
+              accept-ra: no
+              dhcp4: no
+              dhcp6: no
+        EOF
+        chmod -R go-rwx /etc/netplan
+        netplan apply
+        mkdir -p /home/vagrant/.ssh
+        auth="/home/vagrant/.ssh/authorized_keys"
+        pubkey="{PUBKEY}"
+        touch "$auth"
+        grep -Fqx "$pubkey" "$auth" || echo "$pubkey" >> "$auth"
+        chown -R vagrant:vagrant /home/vagrant/.ssh
+        chmod -R go-rwx /home/vagrant/.ssh
+        SHELL
+        end
+    """
+    return txt(content)
+
+def print_ssh_config():
+    content=[]
+    def a(s): content.append(s)
+    a( "host rondbdemo*")
+    a( " user root")
+    a(f" identityFile {IDENTITY_FILE}")
+    for host in hosts:
+        a(f"host {host.name}")
+        a(f" hostname {host.ipv4}")
+    a('')
+    a( "host *.rondbdemo")
+    a( " user vagrant")
+    a(f" identityFile {IDENTITY_FILE}")
+    for vm in vms:
+        a(f"host {vm.name}.rondbdemo")
+        a(f" hostname {vm.ipv6}")
+    header("ssh config")
+    print(txt(content))
+
+ssh_opts = [
+    "-i", IDENTITY_FILE,
+    "-o", "StrictHostKeyChecking=no",
+    "-q"]
+
+def ssh(target, *cmd):
+    subprocess.run(
+        ["ssh", *ssh_opts,
+         f"{target.user}@{target.ipv6}", *cmd],
+        check=True)
+
+def rsync(target, src_file, dst_file):
+    subprocess.run(
+        ["rsync", "-az", "--delete", "-e", f"ssh {' '.join(ssh_opts)}",
+         src_file, f"{target.user}@[{target.ipv6}]:{dst_file}"],
+        check=True)
+
+def setup_host(host):
+    setup_script_name = f"setup-{host.name}"
+    header(f"Setting up host {host.name}...")
+    with tempfile.NamedTemporaryFile(mode='w', prefix=setup_script_name) as f:
+        f.write(setupscript(host))
+        f.flush()
+        subprocess.run(["chmod", "u+x", f.name], check=True)
+        rsync(host, f.name, "setup.sh")
+        ssh(host, "./setup.sh")
+        ssh(host, "rm ./setup.sh")
+        #ssh(host, "shutdown", "-r", "0")
+        # todo maybe add a shutdown after installs and before network setup.
+
+def setup_all_hosts():
+    for host in hosts:
+        setup_host(host)
+
+def setup_vm(vm):
+    vagrantfile_name = f"Vagrantfile-{vm.name}"
+    host = vm.host
+    header(f"Setting up vm {vm.name} on host {host.name}...")
+    with tempfile.NamedTemporaryFile(mode='w', prefix=vagrantfile_name) as f:
+        f.write(vagrantfile(vm))
+        f.flush()
+        ssh(host, "mkdir", "-p", f"vm-{vm.name}")
+        rsync(vm.host, f.name, f"vm-{vm.name}/Vagrantfile")
+        ssh(vm.host, f"cd vm-{vm.name}; vagrant up --provision;")
+
+def setup_all_vms():
+    for vm in vms:
+        setup_vm(vm)
+
+def ansi(s):
+    return f"\033[{s}m" if sys.stdout.isatty() else ""
+
+def header(s):
+    print(f"# {ansi('32')}========== {s} =========={ansi('0')}")
+
+# CLI
+def main():
+    actions = {
+        "ssh_config": print_ssh_config,
+        "setup_hosts": setup_all_hosts,
+        "setup_vms": setup_all_vms,
+    }
+    if len(sys.argv) == 2 and sys.argv[1] in actions:
+        actions[sys.argv[1]]()
+    else:
+        print(txt([
+             "Usage:",
+            f"  {sys.argv[0]} ssh_config",
+             "    Print ssh config for connecting to hosts and VMs",
+             "",
+            f"  {sys.argv[0]} setup_hosts",
+             "    Setup dedicated hosts",
+             "",
+            f"  {sys.argv[0]} setup_vms",
+             "    Setup VMs on deicated hosts",
+        ]))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
