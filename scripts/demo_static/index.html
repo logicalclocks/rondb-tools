@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RDRS Demo</title>
+    <link rel="icon" href="/favicon.png" />
+    <style>
+      /* RonDB style-guide aligned tokens */
+      :root{
+        --bg: #161616;          /* Quantum */
+        --panel: #1e1e1e;       /* Surface on Quantum */
+        --text: #FAF9F6;        /* Off-white */
+        --muted: #DFDFDF;       /* Sipher */
+        --accent: #4593E0;      /* Orbital */
+        --brand: #FFDF00;       /* Terminal */
+        --ok: #57BE97;          /* Circuit */
+        --warn: #FE8C00;        /* Giga */
+        --err: #E68108;         /* Plasma */
+        --border: #484848;      /* Matrix */
+      }
+
+      html, body { height: 100%; }
+      body{
+        margin:0;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .wrap{ max-width: 900px; margin: 40px auto; padding: 0 16px; }
+      h1{ font-size:1.8rem; letter-spacing:.2px; margin:0 0 8px; }
+
+      .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap:16px; }
+      .card{
+        background: var(--panel);
+        border:1px solid var(--border);
+        border-radius:14px;
+        padding:16px;
+        box-shadow: 0 6px 20px rgba(0,0,0,.35);
+      }
+      .card h2{ margin:0 0 10px; font-size:1.1rem; }
+      .row{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 0; border-bottom:1px dashed rgba(255,255,255,.08); }
+      .row:last-child{ border-bottom:0; }
+
+      .k{ color: var(--muted); font-size:.95rem; }
+      .v{ font-variant-numeric: tabular-nums; }
+
+      .btns { display:grid; gap:10px; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); }
+      button {
+        appearance:none;
+        border:1px solid var(--border);
+        border-radius:12px;
+        padding:10px 14px;
+        background:#222; color: var(--text);
+        font-size: 1rem; font-weight:560; cursor:pointer;
+        transition: transform .02s ease, opacity .15s ease, background .15s ease, border-color .15s ease;
+        text-decoration:none; display:inline-block; text-align:center;
+      }
+      button:hover { background:#262626; border-color: var(--accent); }
+      button:active { transform: translateY(1px); }
+      button[disabled]{ opacity:.45; cursor:not-allowed; }
+      button.highlighted { background: var(--brand); color: var(--bg); }
+
+      .pill{ display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); font-size:.92rem; }
+      .dot{ width:8px; height:8px; border-radius:999px; display:inline-block; }
+      .ok{ background: var(--ok); }
+      .warn{ background: var(--warn); }
+      .err{ background: var(--err); }
+
+      .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+
+      a, a:visited { color: var(--accent); }
+      a:hover { color: var(--brand); }
+
+      /* Focus visibility per style guide (Terminal) */
+      :is(button,[href],[tabindex]):focus-visible {
+        outline: 2px solid var(--brand);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>RDRS Demo Control</h1>
+
+      <div class="grid" style="margin-bottom:16px;">
+        <section class="card" aria-labelledby="statusH">
+          <h2 id="statusH">Status</h2>
+          <div class="row"><div class="k">Database</div><div class="v"><span class="pill"><span id="dbDot" class="dot"></span><span id="dbText">—</span></span></div></div>
+          <div class="row"><div class="k">Bench client</div><div class="v"><span class="pill"><span id="bmclientDot" class="dot"></span><span id="bmclientText">—</span></span></div></div>
+          <div class="row"><div class="k">Session TTL</div><div class="v"><span id="ttl" class="mono">--:--</span></div></div>
+        </section>
+        <section class="card" aria-labelledby="actionsH">
+          <h2 id="actionsH">Actions</h2>
+          <div class="btns">
+            <button id="btnCreateDatabase">Create Database</button>
+            <button id="btnRunBmclient">Run benchmark</button>
+            <button id="btnOpenBmclient">Open Bench UI</a>
+            <button id="btnOpenGrafana">Open Grafana</a>
+          </div>
+          <div id="msg" role="status" aria-live="polite" style="margin-top:10px; min-height:1.2em; color: var(--muted);"></div>
+        </section>
+      </div>
+      <section class="card" style="margin:16px 0;">
+        <div id="suggestion" role="status" aria-live="polite" style="min-height:1.2em; text-align:center; color: var(--brand);"></div>
+      </section>
+      <section class="card" style="margin:16px 0; font-size:1rem;">
+        <p>
+        This benchmark setup uses 1 benchmark node, 1 RDRS (RonDB REST Server) node and 2 data nodes.
+        There is also a MySQL Server used to create the databases and tables.
+        </p>
+        <p>
+          When you create a database, you get a test table with 100'000 rows and 10 columns.
+          By default, each REST request fetches 100 rows, with 1000 values in total.
+        </p>
+        <p>
+          REST requests are handled as follows:
+          <ol>
+            <li>The benchmark client sends a REST request to RDRS, containing several key lookup requests.</li>
+            <li>RDRS forwards the key lookup requests to the RonDB data nodes.</li>
+            <li>Data nodes process the request and send the responses back to RDRS.</li>
+            <li>RDRS compiles the key lookup results into one REST response, which is sent back to the benchmark client.</li>
+          </ol>
+        </p>
+        <p>
+          Each network jump induces a delay of about 250-280 &mu;s (ping latency is between 500-560 &mu;s).
+          Thus between 1.0-1.1 milliseconds latency is due to network latency.
+          The remainder of the latency is spent in RDRS, RonDB data nodes and the Python client.
+        </p>
+        <p>
+          The reported benchmark with 100M Key lookups on our <a href="https://rondb.com/" target="_blank">front page</a> used a setup with network latency around 130 &mu;s.
+        </p>
+        <p>
+          This test cluster is running on 3 dedicated servers, each with an AMD Ryzen 7 7700 8-Core Processor and 64 GiB RAM.
+          The data, RDRS and bench nodes run as VMs, distributed such that each network jump needs to go to a different physical machine, in order to incur a realistic latency.
+        </p>
+        <p>
+          Do you want to run a bigger benchmark? Use <a href="https://github.com/logicalclocks/rondb-tools" target="_blank">this open source tool</a> to create a cluster just like this one &ndash; except no limits.
+        </p>
+      </section>
+    </div>
+
+    <script>
+      // --- State ---
+      let vm = null;
+
+      // --- DOM shortcuts ---
+      const $ = (id) => document.getElementById(id);
+      const el = {
+        dbDot: $("dbDot"), dbText: $("dbText"),
+        locDot: $("bmclientDot"), locText: $("bmclientText"),
+        ttl: $("ttl"), msg: $("msg"),
+        btnCreateDatabase: $("btnCreateDatabase"),
+        btnRunBmclient: $("btnRunBmclient"),
+        btnOpenBmclient: $("btnOpenBmclient"),
+        btnOpenGrafana: $("btnOpenGrafana"),
+        suggestion: $("suggestion"),
+      };
+
+      // --- Utilities ---
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      function setPill(dotEl, textEl, ok, label){
+        dotEl.className = 'dot ' + (ok ? 'ok' : 'warn');
+        textEl.textContent = label;
+      }
+      function setMsg(text, kind='info') {
+        const colors = { info: 'var(--muted)', warn: 'var(--warn)', err: 'var(--err)', ok: 'var(--ok)' };
+        el.msg.style.color = colors[kind] || colors.info;
+        el.msg.textContent = text || '';
+      }
+      function setSuggestion(text) {
+        el.suggestion.textContent = text || '';
+      }
+
+      // --- Render strictly from vm ---
+      function render(){
+        if(!vm) return;
+        setPill(el.dbDot, el.dbText, vm.db_status_ok, vm.db_status_text);
+        setPill(el.locDot, el.locText, vm.locust_status_ok, vm.locust_status_text);
+        el.btnCreateDatabase.disabled = !vm.can_create_database;
+        el.btnRunBmclient.disabled = !vm.can_run_locust;
+        el.btnOpenBmclient.disabled = !vm.can_open_locust;
+        el.btnOpenGrafana.disabled = !vm.can_open_grafana;
+        // Message
+        if(Array.isArray(vm.user_message) &&
+           vm.user_message.length == 3 &&
+           Math.floor(vm.user_message[2] - Date.now()/1000)>0)
+          setMsg(vm.user_message[0], vm.user_message[1]);
+        else
+          setMsg("", "");
+        setSuggestion(vm.suggestion);
+        el.btnCreateDatabase.classList.toggle('highlighted', vm.highlight == "db");
+        el.btnRunBmclient.classList.toggle('highlighted', vm.highlight == "locust");
+        el.btnOpenGrafana.classList.toggle('highlighted', vm.highlight == "latency");
+        el.btnOpenBmclient.classList.toggle('highlighted', vm.highlight == "latency");
+      }
+
+      // --- Poll /viewmodel continuously ---
+      async function fetchViewModel(){
+        try{
+          const res = await fetch('/viewmodel', { credentials:'same-origin' });
+          if(!res.ok) throw new Error(`GET /viewmodel ${res.status}`);
+          vm = await res.json();
+          setMsg('');
+        }catch(e){
+          setMsg('Unable to fetch status. Retrying…', 'warn');
+        }finally{
+          render();
+        }
+      }
+
+      // --- Actions ---
+      async function action(path){
+        try{
+          const res = await fetch(path, { method:'GET', credentials:'same-origin' });
+          if(!res.ok){ setMsg(`${path} failed with HTTP (${res.status})`, 'err'); return null; }
+          const data = await res.json();
+          vm = data;
+          setMsg('');
+        }catch(e){
+          setMsg(`${path} failed: ${e.message}`, 'err');
+        }finally{
+          render();
+        }
+      }
+
+      // Button handlers
+      el.btnCreateDatabase.addEventListener('click', () => action('/create-database'));
+      el.btnRunBmclient.addEventListener('click', () => action('/run-locust'));
+      el.btnOpenBmclient.addEventListener('click', () => {
+        window.open('/locust/', "_blank", "noopener");
+      });
+      el.btnOpenGrafana.addEventListener('click', () => {
+        const dashboard = vm.default_grafana_dashboard || '';
+        const url = dashboard ? `/grafana/d/${dashboard}` : '/grafana/';
+        window.open(url, "_blank", "noopener");
+      });
+
+      // --- Tickers ---
+      (async function pollLoop(){
+        while(true){
+          await fetchViewModel();
+          await sleep(3000);
+        }
+      })();
+      setInterval(() => {
+        if (vm == null) return;
+        expiresAt = Number(vm.expires_at || 0);
+        if(expiresAt) {
+          secs = Math.floor(expiresAt - Date.now()/1000);
+          if(secs>0) {
+            const m = Math.floor(secs / 60);
+            const s = secs % 60;
+            el.ttl.textContent =  `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+            return;
+          }
+        }
+        el.ttl.textContent = '--:--';
+      }, 1000);
+
+      render();
+    </script>
+  </body>
+</html>

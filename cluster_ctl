@@ -257,11 +257,13 @@ def get_rnd_cache():
             json.dumps({
                 "gui_secret": os.urandom(10).hex(),
                 "unique_suffix": os.urandom(8).hex(),
+                "demo_mysql_pw": os.urandom(10).hex(),
             }),
             encoding='utf-8')
     return json.loads(secret_file.read_text(encoding='utf-8'))
 
 def get_gui_secret(): return get_rnd_cache()["gui_secret"]
+def get_demo_mysql_pw(): return get_rnd_cache()["demo_mysql_pw"]
 def get_unique_suffix(): return get_rnd_cache()["unique_suffix"]
 def get_aws_key_name():
     if get_config('deployment_type') == "static":
@@ -315,6 +317,7 @@ def generate_config_files():
         "RDRS_PRI_1": first('rdrs').private_ip,
         "RDRS_MAJOR_VERSION": f"{get_config('rdrs_major_version')}",
         "BENCH_PRI_1": first('bench').private_ip,
+        "DEMO_MYSQL_PW": get_demo_mysql_pw(),
         "GRAFANA_PRI_1": first('grafana').private_ip,
         "GUI_SECRET": GUI_SECRET,
     }
@@ -483,7 +486,7 @@ def generate_config_files():
       "disable_login_form = true",
       "[auth.anonymous]",
       "enabled = true",
-      "org_role = Editor",
+      "org_role = Viewer",
       "[server]",
       f"root_url = http://{first('bench').public_ip}:8080/grafana/",
       "serve_from_sub_path = true",
@@ -528,11 +531,12 @@ def generate_config_files():
             {1: "rdrs2*.json", 2: "rdrs1*.json"}[
                 get_config('rdrs_major_version')]):
         f.unlink()
-    # nginx config to expose grafana and locust on the first bench
+    # nginx config to expose grafana, locust and demo UI on the first bench
     # node. This implements a simple cookie-based authentication. An
     # unauthenticated user receives 403 for all requests except
     # /secret=SECRET/path, which will set the authentication cookie and redirect
-    # to /path.
+    # to /path. location / is proxied to the demo UI without authentication, on
+    # purpose.
     w("config_files/nginx.conf",
       f'pid {RUN_DIR}/nginx/nginx.pid;',
       # For forwarding, worker_rlimit_nofile = worker_connections * 2 FDs
@@ -582,11 +586,16 @@ def generate_config_files():
        '      proxy_pass http://127.0.0.1:$locust_http_port;',
        '    }',
        '    location / {',
-       '      return 404;',
+       '      proxy_http_version 1.1;',
+       '      proxy_set_header Upgrade $http_upgrade;',
+       '      proxy_set_header Connection $connection_upgrade;',
+       '      proxy_pass http://127.0.0.1:8000;',
        '    }',
        '  }',
        '}',
       )
+    # WARNING: nginx-dynamic.conf is re-generated in scripts/demo_server.py,
+    # so keep the logic in sync.
     w("config_files/nginx-dynamic.conf",
        'map $gui_secret $grafana_access {',
       f'    "{GUI_SECRET}" 1;',
@@ -918,6 +927,33 @@ def do_stop_locust():
         ssh(node, "source ~/scripts/include.sh && stop locust")
     ])
 
+# start_demo command
+def do_start_demo():
+    RUN_DIR = get_deploy_output('run_dir')
+    DURABLE_DIR = get_deploy_output('durable_dir')
+    if node_count("bench") > 1:
+        die("Demo server not supported for multiple bench nodes.")
+    run_for_one_node(first('bench'), lambda node: [
+        ssh(node, "bash ~/scripts/start_demo_server.sh")
+    ])
+    check_failed()
+    uri=lnk(f"http://{first('bench').public_ip}:8080/")
+    print('To show demo server logs, run:')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {DURABLE_DIR}/demo.log')
+    print('To show demo server state, run:')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {DURABLE_DIR}/demo_state.json | jq')
+    print('To show web server access / error logs, run:')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo/uvicorn.log')
+    print(f'  ./cluster_ctl ssh {first("bench").name()} cat {RUN_DIR}/demo/uvicorn.err')
+    print(f'Go to {uri} in your browser to see the demo UI.')
+
+# stop_demo command
+def do_stop_demo():
+    run_for_one_node(first('bench'), lambda node: [
+        ssh(node, "source ~/scripts/include.sh && stop uvicorn")
+    ])
+    check_failed()
+
 # list command
 def do_list():
     run_for_all(all_nodes(), lambda _: [UPDATE_STATUS])
@@ -1088,6 +1124,8 @@ def main():
     elif action in ["terraform",
                     "kill_tmux",
                     "stop_locust",
+                    "start_demo",
+                    "stop_demo",
                     "list",
                     "cleanup"]:
         if argc != 2:
@@ -1095,6 +1133,8 @@ def main():
         if action == "terraform": do_terraform()
         elif action == "kill_tmux": do_kill_tmux()
         elif action == "stop_locust": do_stop_locust()
+        elif action == "start_demo": do_start_demo()
+        elif action == "stop_demo": do_stop_demo()
         elif action == "list": do_list()
         elif action == "cleanup": do_cleanup()
         else: die("Bug")

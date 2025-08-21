@@ -81,10 +81,10 @@ resource "aws_security_group" "rondb_bench" {
 # Security group for the first bench node.
 resource "aws_security_group" "rondb_bench_web" {
   name        = "rondb_bench_web-${var.unique_suffix}"
-  description = "Expose nginx (for Grafana and Locust)"
+  description = "Expose nginx (for Grafana, Locust and demo UI)"
   vpc_id      = aws_vpc.main.id
 
-  # Expose nginx (for Grafana and Locust)
+  # Expose nginx (for Grafana, Locust and demo UI)
   ingress {
     from_port   = 8080
     to_port     = 8080

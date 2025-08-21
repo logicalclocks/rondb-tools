@@ -105,12 +105,12 @@ case "$NODEINFO_ROLE" in
         sudo tee /etc/apt/preferences.d/99nginx
       apt_install nginx
     fi
-    # Install python deps for locust
-    mkdir -p ${RUN_DIR}/locust ${RUN_DIR}/nginx
+    # Install python deps for locust and demo UI
+    mkdir -p ${RUN_DIR}/locust ${RUN_DIR}/nginx ${RUN_DIR}/demo ${DURABLE_DIR}
     python3 -m venv ${RUN_DIR}/venv
     source ${RUN_DIR}/venv/bin/activate
     pip install -q --upgrade pip
-    pip install -q locust psutil mysql-connector-python requests
+    pip install -q locust psutil fastapi uvicorn mysql-connector-python requests
     deactivate
     ;;
 esac

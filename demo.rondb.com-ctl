@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+import textwrap
+from pathlib import Path
+import subprocess
+import tempfile
+import sys
+import os
+
+IDENTITY_FILE = f"{os.environ['PWD']}/id_rondbdemo"
+PUBKEY = Path(f"{IDENTITY_FILE}.pub").read_text().strip()
+RONDB_REPLICAS = 1
+DOMAIN="demo.rondb.com"
+
+class Host:
+    def __init__(self, name, public_ip, idx):
+        self.name = name
+        self.public_ip = public_ip
+        self.ip = f"10.87.2.{10+idx}"
+        self.ip_subnet_24 = f"10.87.{56+idx}"
+        self.ip_bridge = f"{self.ip_subnet_24}.1"
+        self.user = "root"
+hosts=[
+    #    Name          Public IP          idx
+    Host("rondbdemo0", "135.181.240.234", 0),
+    Host("rondbdemo1", "95.217.122.106",  1),
+    Host("rondbdemo2", "65.109.123.242",  2),
+]
+
+class VM:
+    def __init__(self, name, vcpus, ram_gb, disk_gb, host_idx, ip_last, cpuaffinity):
+        self.name = name
+        self.vcpus = vcpus
+        self.ram_gb = ram_gb
+        self.disk_gb = disk_gb
+        self.host = hosts[host_idx]
+        self.ip = f"{self.host.ip_subnet_24}.{ip_last}"
+        padded = f"0000{ip_last}"
+        # First byte must be xxxxxx10, the rest can be random.
+        self.mac = f"02:db:0e:ba:{padded[-4:-2]}:{padded[-2:]}"
+        self.user = "vagrant"
+        self.cpuaffinity = cpuaffinity
+vms=[
+    #   Name        vCPUs RAM disk host IP last CPU affinity
+    VM("ndb-mgmd",     1,  4,  60,   2, 10,     [15]),
+    VM("ndbmtd-0",     4, 32, 300,   0, 20,     [15, 14, 13, 12]),
+    VM("ndbmtd-1",     4, 32, 300,   1, 21,     [15, 14, 13, 12]),
+    VM("mysqld",       6,  8,  60,   1, 30,     [11, 10, 9, 8, 7, 6]),
+    VM("rdrs",        15, 48,  60,   2, 40,     [14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+    VM("prometheus",   3, 12, 250,   1, 50,     [5, 4, 3]),
+    VM("grafana",      3,  8,  60,   1, 60,     [2, 1, 0]),
+    VM("bench",       12, 16,  60,   0, 70,     [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+]
+
+WEB_VM = vms[-1]
+assert WEB_VM.name == "bench"
+WEB_HOST = WEB_VM.host
+
+def txt(s):
+    if isinstance(s, list):
+        s = '\n'.join(s)
+    return textwrap.dedent(s).strip()+'\n'
+
+def host_setup_script(host):
+    ports = "22 80 443" if host == WEB_HOST else "22"
+    content = f"""
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # Bridge for VMs
+        ip link show vmbr0 >/dev/null 2>&1 || ip link add vmbr0 type bridge
+        ip link set vmbr0 up
+        # Assign host's VM gateway inside your routed /64 (subnetted /80)
+        ip addr show dev vmbr0 | grep -q {host.ip_bridge} ||
+        ip addr add {host.ip_bridge}/24 dev vmbr0
+        # IP Forwarding
+        sysctl -w net.ipv4.conf.all.forwarding=1
+        # Install Vagrant
+        wget -O - https://apt.releases.hashicorp.com/gpg | gpg --dearmor --batch --yes -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release; echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/hashicorp.list
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y vagrant qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils build-essential libvirt-dev ruby-dev
+        systemctl enable --now libvirtd
+        vagrant plugin install vagrant-libvirt
+        # Lock down incoming traffic
+        apt-get install -y ufw
+        ufw --force reset
+        ufw route allow from any to any
+        for port in {ports}; do
+          ufw allow $port
+        done
+        for source in {' '.join([h.ip for h in hosts])} {' '.join([f"{h.ip_subnet_24}.0/24" for h in hosts])}; do
+          ufw allow from $source
+        done
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw --force enable
+    """
+    return txt(content)
+
+def vagrantfile(vm):
+    cpuaffinity = ', '.join(f"{idx} => '{cpu}'"
+                            for idx, cpu in enumerate(vm.cpuaffinity))
+    content = f"""
+        Vagrant.configure("2") do |config|
+          config.vm.box = "generic/ubuntu2204"
+          config.vm.hostname = "{vm.name}"
+          config.vm.provider :libvirt do |v|
+            v.cpus = {vm.vcpus}
+            # The -tiy is not a typo
+            v.cpuaffinitiy {cpuaffinity}
+            v.memory = {vm.ram_gb * 1024}
+            v.cpu_mode = "host-passthrough"
+            v.nic_model_type = "virtio"
+            v.graphics_type = "none"
+            v.video_type = "none"
+            v.machine_virtual_size = {vm.disk_gb + 4}
+          end
+          # Attach to the internal bridge
+          config.vm.network "public_network",
+            type: "bridge",
+            dev: "vmbr0",
+            mac: "{vm.mac}"
+          config.vm.provision "shell", inline: <<-'SHELL'
+        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+        sudo growpart /dev/vda 3
+        sudo pvresize /dev/vda3
+        sudo lvextend -L {vm.disk_gb}G /dev/ubuntu-vg/ubuntu-lv
+        sudo resize2fs /dev/ubuntu-vg/ubuntu-lv
+        cat >/etc/netplan/60-vagrant.yaml <<'EOF'
+        network:
+          version: 2
+          ethernets:
+            vmbr:
+              match:
+                macaddress: {vm.mac}
+              set-name: vmbr
+              addresses:
+                - {vm.ip}/24
+              routes:
+                - to: 10.87.0.0/16
+                  via: {vm.host.ip_bridge}
+              accept-ra: no
+              dhcp4: no
+              dhcp6: no
+        EOF
+        chmod -R go-rwx /etc/netplan
+        netplan apply
+        for dev in eth0 vmbr lo; do
+          sudo ip -6 addr flush dev $dev
+        done
+        mkdir -p /home/vagrant/.ssh
+        auth="/home/vagrant/.ssh/authorized_keys"
+        pubkey="{PUBKEY}"
+        touch "$auth"
+        grep -Fqx "$pubkey" "$auth" || echo "$pubkey" >> "$auth"
+        chown -R vagrant:vagrant /home/vagrant/.ssh
+        chmod -R go-rwx /home/vagrant/.ssh
+        # Lock down incoming traffic
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y ufw
+        ufw --force reset
+        ufw allow 22/tcp
+        for source in {' '.join([h.ip for h in hosts])} {' '.join([f"{h.ip_subnet_24}.0/24" for h in hosts])}; do
+          ufw allow from $source
+        done
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw --force enable
+        SHELL
+        end
+    """
+    return txt(content)
+
+def caddyfile():
+    content=f"""
+        {{
+          # Enable HTTP/1.1 + HTTP/2 + HTTP/3 (QUIC)
+          servers {{
+            protocols h1 h2 h3
+          }}
+        }}
+        http://{DOMAIN} {{
+          redir https://{{host}}{{uri}} 308
+        }}
+        https://{DOMAIN} {{
+          encode zstd gzip
+          reverse_proxy http://{WEB_VM.ip}:8080 {{
+            transport http {{
+              keepalive 30s
+            }}
+          }}
+        }}
+    """
+    return txt(content).replace("  ", '\t')
+
+def web_host_setup_script():
+    content="""
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # Install caddy
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y
+        apt-get install -y curl gpg apt-transport-https ca-certificates
+        install -d -m 0755 /usr/share/keyrings
+        curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+          | gpg --dearmor --batch --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        CODENAME="$(. /etc/os-release; echo "$UBUNTU_CODENAME")"
+        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] \
+        https://dl.cloudsmith.io/public/caddy/stable/deb/ubuntu $CODENAME main" \
+          >/etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -y
+        apt-get install -y caddy
+        caddy validate --config Caddyfile
+        chown root:root Caddyfile
+        chmod 644 Caddyfile
+        mv Caddyfile /etc/caddy/Caddyfile
+        systemctl enable --now caddy
+        systemctl restart caddy
+    """
+    return txt(content)
+
+def print_ssh_config():
+    content=[]
+    def a(s): content.append(s)
+    a( "host rondbdemo*")
+    a( " user root")
+    a(f" identityFile {IDENTITY_FILE}")
+    for host in hosts:
+        a(f"host {host.name}")
+        a(f" hostname {host.public_ip}")
+    a('')
+    a( "host *.rondbdemo")
+    a( " user vagrant")
+    a(f" identityFile {IDENTITY_FILE}")
+    for vm in vms:
+        a(f"host {vm.name}.rondbdemo")
+        a(f" hostname {vm.ip}")
+    header("ssh config")
+    print(txt(content))
+
+ssh_opts = [
+    "-i", IDENTITY_FILE,
+    "-o", "StrictHostKeyChecking=no",
+    "-q"]
+
+def ssh(target, *cmd):
+    subprocess.run(
+        ["ssh", *ssh_opts,
+         f"{target.user}@{target.ip}", *cmd],
+        check=True)
+
+def rsync(target, src_file, dst_file):
+    subprocess.run(
+        ["rsync", "-az", "--delete", "-e", f"ssh {' '.join(ssh_opts)}",
+         src_file, f"{target.user}@{target.ip}:{dst_file}"],
+        check=True)
+
+def setup_host(host):
+    setup_script_name = f"setup-{host.name}"
+    header(f"Setting up host {host.name}...")
+    with tempfile.NamedTemporaryFile(mode='w', prefix=setup_script_name) as f:
+        f.write(host_setup_script(host))
+        f.flush()
+        subprocess.run(["chmod", "u+x", f.name], check=True)
+        rsync(host, f.name, "setup.sh")
+        ssh(host, "./setup.sh")
+        ssh(host, "rm ./setup.sh")
+
+def setup_web_host():
+    host = WEB_HOST
+    header(f"Setting up {host.name} as web host")
+    fname = "Caddyfile"
+    with tempfile.NamedTemporaryFile(mode='w', prefix=fname) as f:
+        f.write(caddyfile())
+        f.flush()
+        rsync(host, f.name, fname)
+    fname = "setup_web_host"
+    with tempfile.NamedTemporaryFile(mode='w', prefix=fname) as f:
+        f.write(web_host_setup_script())
+        f.flush()
+        subprocess.run(["chmod", "u+x", f.name], check=True)
+        rsync(host, f.name, fname)
+        ssh(host, f"./{fname}")
+        ssh(host, f"rm ./{fname}")
+
+def setup_all_hosts():
+    for host in hosts:
+        setup_host(host)
+    setup_web_host()
+
+def restart_hosts():
+    for host in hosts:
+        ssh(host, "shutdown", "-r", "0")
+
+def setup_vm(vm):
+    vagrantfile_name = f"Vagrantfile-{vm.name}"
+    host = vm.host
+    header(f"Setting up vm {vm.name} on host {host.name}...")
+    with tempfile.NamedTemporaryFile(mode='w', prefix=vagrantfile_name) as f:
+        f.write(vagrantfile(vm))
+        f.flush()
+        ssh(host, "mkdir", "-p", f"vm-{vm.name}")
+        rsync(vm.host, f.name, f"vm-{vm.name}/Vagrantfile")
+        ssh(vm.host, f"cd vm-{vm.name}; vagrant up --provision;")
+
+def setup_all_vms():
+    for vm in vms:
+        setup_vm(vm)
+
+def destroy_vm(vm):
+    host = vm.host
+    header(f"Destroying vm {vm.name} on host {host.name}...")
+    ssh(vm.host, f"if [ -d vm-{vm.name} ]; then cd vm-{vm.name} && vagrant destroy -f && cd .. && rm -rf vm-{vm.name}; fi")
+
+def destroy_all_vms():
+    for vm in vms:
+        destroy_vm(vm)
+
+def print_cluster_config():
+    content=[]
+    def a(s): content.append(s)
+    a( 'demo_rondb_com_config = {')
+    a( '    "deployment_type": "static",')
+    a( '    "node_user": "vagrant",')
+    a( '    "cpu_platform": "x86_64",')
+    a(f'    "rondb_replicas": {RONDB_REPLICAS},')
+    a(f'    "ssh_key_file": "{IDENTITY_FILE}",')
+    for node_type in [
+            "ndb_mgmd",
+            "ndbmtd",
+            "mysqld",
+            "rdrs",
+            "prometheus",
+            "grafana",
+            "bench",
+    ]:
+        name_prefix = node_type.replace('_', '-')
+        vms_of_this_type = [vm for vm in vms if vm.name.startswith(name_prefix)]
+        ips = []
+        vm_count = len(vms_of_this_type)
+        assert vm_count > 0
+        for i in range(vm_count):
+            vm = vms_of_this_type[i]
+            vm_name = vm.name
+            assert vm_name == (name_prefix
+                               if vm_count == 1
+                               else f"{name_prefix}-{i}")
+            ips.append(vm.ip)
+        a(f'    "{node_type}_public_ips": {repr(ips)},')
+        a(f'    "{node_type}_private_ips": {repr(ips)},')
+        if node_type == "bench":
+            cpu_counts = {vm.vcpus for vm in vms_of_this_type}
+            assert len(cpu_counts) == 1
+            a(f'    "{node_type}_cpus_per_node": {cpu_counts.pop()},')
+    a( '}')
+    a( 'config = {')
+    a( '    **latest_rondb,')
+    a( '    **demo_rondb_com_config')
+    a( '}')
+    header("cluster config")
+    print(txt(content))
+
+def ansi(s):
+    return f"\033[{s}m" if sys.stdout.isatty() else ""
+
+def header(s):
+    print(f"# {ansi('32')}========== {s} =========={ansi('0')}")
+
+# CLI
+def main():
+    actions = {
+        "ssh_config": print_ssh_config,
+        "setup_hosts": setup_all_hosts,
+        "restart_hosts": restart_hosts,
+        "setup_vms": setup_all_vms,
+        "destroy_vms": destroy_all_vms,
+        "cluster_config": print_cluster_config,
+    }
+    if len(sys.argv) == 2 and sys.argv[1] in actions:
+        actions[sys.argv[1]]()
+    else:
+        cmd = sys.argv[0]
+        print(txt([
+             "Usage:",
+            f"  {cmd} ssh_config",
+             "    Print ssh config for connecting to hosts and VMs.",
+             "",
+            f"  {cmd} setup_hosts",
+             "    Setup dedicated hosts.",
+             "    Initially, run setup_hosts twice, separated by a restart.",
+             "    Not all things are persisted, so after each restart, run setup_hosts again.",
+             "",
+            f"  {cmd} restart_hosts",
+             "    Restart all hosts.",
+             "",
+            f"  {cmd} setup_vms",
+             "    Setup or reprovision VMs on dedicated hosts.",
+             "",
+            f"  {cmd} destroy_vms",
+             "    Destroy all VMs. This means IRREVOCABLE data loss.",
+             "",
+            f"  {cmd} cluster_config",
+             "    Print a config usable for config.py.",
+        ]))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

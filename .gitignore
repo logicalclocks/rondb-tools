@@ -2,6 +2,11 @@
 .terraform*
 __pycache__
 config_files/
+demo.log
+demo.log.*
+demo_state.json
+id_rondbdemo
+id_rondbdemo.pub
 secrets.json
 terraform.*
 tf_output

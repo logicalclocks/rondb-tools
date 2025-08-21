@@ -126,12 +126,36 @@ static_config = {
     "bench_cpus_per_node": 12,
 }
 
+demo_rondb_com_config = {
+    "deployment_type": "static",
+    "node_user": "vagrant",
+    "cpu_platform": "x86_64",
+    "rondb_replicas": 1,
+    "ssh_key_file": f"{__import__('os').environ['PWD']}/id_rondbdemo",
+    "ndb_mgmd_public_ips": ['10.87.58.10'],
+    "ndb_mgmd_private_ips": ['10.87.58.10'],
+    "ndbmtd_public_ips": ['10.87.56.20', '10.87.57.21'],
+    "ndbmtd_private_ips": ['10.87.56.20', '10.87.57.21'],
+    "mysqld_public_ips": ['10.87.57.30'],
+    "mysqld_private_ips": ['10.87.57.30'],
+    "rdrs_public_ips": ['10.87.58.40'],
+    "rdrs_private_ips": ['10.87.58.40'],
+    "prometheus_public_ips": ['10.87.57.50'],
+    "prometheus_private_ips": ['10.87.57.50'],
+    "grafana_public_ips": ['10.87.57.60'],
+    "grafana_private_ips": ['10.87.57.60'],
+    "bench_public_ips": ['10.87.56.70'],
+    "bench_private_ips": ['10.87.56.70'],
+    "bench_cpus_per_node": 12,
+}
+
 config = {
     # RonDB version
     **latest_rondb,
     #**latest_rondb_22,
 
     # All other configuration, either AWS or static
-    **aws_config
+    #**aws_config
     #**static_config
+    **demo_rondb_com_config
 }
